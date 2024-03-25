@@ -266,14 +266,6 @@ static int pgpPrtSubType(const uint8_t *h, size_t hlen, pgpSigType sigtype,
 	hlen -= i;
 
 	switch (*p & ~PGPSUBTYPE_CRITICAL) {
-	case PGPSUBTYPE_PREFER_SYMKEY:	/* preferred symmetric algorithms */
-	    break;
-	case PGPSUBTYPE_PREFER_HASH:	/* preferred hash algorithms */
-	    break;
-	case PGPSUBTYPE_PREFER_COMPRESS:/* preferred compression algorithms */
-	    break;
-	case PGPSUBTYPE_KEYSERVER_PREFERS:/* key server preferences */
-	    break;
 	case PGPSUBTYPE_SIG_CREATE_TIME:  /* signature creation time */
 	    if (!hashed)
 		break; /* RFC 4880 §5.2.3.4 creation time MUST be hashed */
@@ -285,9 +277,6 @@ static int pgpPrtSubType(const uint8_t *h, size_t hlen, pgpSigType sigtype,
 	    if (!(_digp->saved & PGPDIG_SAVED_TIME))
 		_digp->time = pgpGrab(p+1, sizeof(_digp->time));
 	    _digp->saved |= PGPDIG_SAVED_TIME | PGPDIG_SIG_HAS_CREATION_TIME;
-	    break;
-	case PGPSUBTYPE_SIG_EXPIRE_TIME:
-	case PGPSUBTYPE_KEY_EXPIRE_TIME:
 	    break;
 
 	case PGPSUBTYPE_ISSUER_KEYID:	/* issuer key ID */
@@ -312,31 +301,6 @@ static int pgpPrtSubType(const uint8_t *h, size_t hlen, pgpSigType sigtype,
 	    _digp->saved |= PGPDIG_SIG_HAS_KEY_FLAGS;
 	    _digp->key_flags = plen >= 2 ? p[1] : 0;
 	    break;
-	case PGPSUBTYPE_EXPORTABLE_CERT:
-	case PGPSUBTYPE_TRUST_SIG:
-	case PGPSUBTYPE_REGEX:
-	case PGPSUBTYPE_REVOCABLE:
-	case PGPSUBTYPE_ARR:
-	case PGPSUBTYPE_REVOKE_KEY:
-	case PGPSUBTYPE_NOTATION:
-	case PGPSUBTYPE_PREFER_KEYSERVER:
-	case PGPSUBTYPE_PRIMARY_USERID:
-	case PGPSUBTYPE_POLICY_URL:
-	case PGPSUBTYPE_SIGNER_USERID:
-	case PGPSUBTYPE_REVOKE_REASON:
-	case PGPSUBTYPE_FEATURES:
-	case PGPSUBTYPE_EMBEDDED_SIG:
-	case PGPSUBTYPE_INTERNAL_100:
-	case PGPSUBTYPE_INTERNAL_101:
-	case PGPSUBTYPE_INTERNAL_102:
-	case PGPSUBTYPE_INTERNAL_103:
-	case PGPSUBTYPE_INTERNAL_104:
-	case PGPSUBTYPE_INTERNAL_105:
-	case PGPSUBTYPE_INTERNAL_106:
-	case PGPSUBTYPE_INTERNAL_107:
-	case PGPSUBTYPE_INTERNAL_108:
-	case PGPSUBTYPE_INTERNAL_109:
-	case PGPSUBTYPE_INTERNAL_110:
 	default:
 	    break;
 	}
