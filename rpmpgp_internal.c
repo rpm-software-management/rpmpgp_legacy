@@ -16,8 +16,6 @@
 
 #include "debug.h"
 
-static int _print = 0;
-
 typedef uint8_t pgpTime_t[4];
 
 typedef struct pgpPktKeyV3_s {
@@ -79,47 +77,6 @@ struct pgpDigParams_s {
 
     pgpDigAlg alg;
 };
-
-static void pgpPrtNL(void)
-{
-    if (!_print) return;
-    fprintf(stderr, "\n");
-}
-
-static void pgpPrtHex(const char *pre, const uint8_t *p, size_t plen)
-{
-    char *hex = NULL;
-    if (!_print) return;
-    if (pre && *pre)
-	fprintf(stderr, "%s", pre);
-    hex = rpmhex(p, plen);
-    fprintf(stderr, " %s", hex);
-    free(hex);
-}
-
-static void pgpPrtVal(const char * pre, pgpValType vt, uint8_t val)
-{
-    if (!_print) return;
-    if (pre && *pre)
-	fprintf(stderr, "%s", pre);
-    fprintf(stderr, "%s(%u)", pgpValString(vt, val), (unsigned)val);
-}
-
-static void pgpPrtTime(const char * pre, const uint8_t *p, size_t plen)
-{
-    if (!_print) return;
-    if (pre && *pre)
-	fprintf(stderr, "%s", pre);
-    if (plen == 4) {
-	char buf[1024];
-	time_t t = pgpGrab(p, plen);
-	struct tm _tm, *tms = localtime_r(&t, &_tm);
-	if (strftime(buf, sizeof(buf), "%c", tms) > 0)
-	    fprintf(stderr, " %-24.24s(0x%08x)", buf, (unsigned)t);
-    } else {
-	pgpPrtHex("", p+1, plen-1);
-    }
-}
 
 /** \ingroup rpmpgp
  * Return value of an OpenPGP string.
@@ -308,26 +265,14 @@ static int pgpPrtSubType(const uint8_t *h, size_t hlen, pgpSigType sigtype,
 	p += i;
 	hlen -= i;
 
-	pgpPrtVal("    ", PGPVAL_SUBTYPE, (p[0]&(~PGPSUBTYPE_CRITICAL)));
-	if (p[0] & PGPSUBTYPE_CRITICAL)
-	    if (_print)
-		fprintf(stderr, " *CRITICAL*");
 	switch (*p & ~PGPSUBTYPE_CRITICAL) {
 	case PGPSUBTYPE_PREFER_SYMKEY:	/* preferred symmetric algorithms */
-	    for (i = 1; i < plen; i++)
-		pgpPrtVal(" ", PGPVAL_SYMKEYALGO, p[i]);
 	    break;
 	case PGPSUBTYPE_PREFER_HASH:	/* preferred hash algorithms */
-	    for (i = 1; i < plen; i++)
-		pgpPrtVal(" ", PGPVAL_HASHALGO, p[i]);
 	    break;
 	case PGPSUBTYPE_PREFER_COMPRESS:/* preferred compression algorithms */
-	    for (i = 1; i < plen; i++)
-		pgpPrtVal(" ", PGPVAL_COMPRESSALGO, p[i]);
 	    break;
 	case PGPSUBTYPE_KEYSERVER_PREFERS:/* key server preferences */
-	    for (i = 1; i < plen; i++)
-		pgpPrtVal(" ", PGPVAL_SERVERPREFS, p[i]);
 	    break;
 	case PGPSUBTYPE_SIG_CREATE_TIME:  /* signature creation time */
 	    if (!hashed)
@@ -343,7 +288,6 @@ static int pgpPrtSubType(const uint8_t *h, size_t hlen, pgpSigType sigtype,
 	    break;
 	case PGPSUBTYPE_SIG_EXPIRE_TIME:
 	case PGPSUBTYPE_KEY_EXPIRE_TIME:
-	    pgpPrtTime(" ", p+1, plen-1);
 	    break;
 
 	case PGPSUBTYPE_ISSUER_KEYID:	/* issuer key ID */
@@ -394,10 +338,8 @@ static int pgpPrtSubType(const uint8_t *h, size_t hlen, pgpSigType sigtype,
 	case PGPSUBTYPE_INTERNAL_109:
 	case PGPSUBTYPE_INTERNAL_110:
 	default:
-	    pgpPrtHex("", p+1, plen-1);
 	    break;
 	}
-	pgpPrtNL();
 
 	if (!impl && (p[0] & PGPSUBTYPE_CRITICAL))
 	    rc = 1;
@@ -481,17 +423,7 @@ static int pgpPrtSig(pgpTag tag, const uint8_t *h, size_t hlen,
 	if (hlen <= sizeof(*v) || v->hashlen != 5)
 	    return 1;
 
-	pgpPrtVal("V3 ", PGPVAL_TAG, tag);
-	pgpPrtVal(" ", PGPVAL_PUBKEYALGO, v->pubkey_algo);
-	pgpPrtVal(" ", PGPVAL_HASHALGO, v->hash_algo);
-	pgpPrtVal(" ", PGPVAL_SIGTYPE, v->sigtype);
-	pgpPrtNL();
-	pgpPrtTime(" ", v->time, sizeof(v->time));
-	pgpPrtNL();
-	pgpPrtHex(" signer keyid", v->signid, sizeof(v->signid));
 	plen = pgpGrab(v->signhash16, sizeof(v->signhash16));
-	pgpPrtHex(" signhash16", v->signhash16, sizeof(v->signhash16));
-	pgpPrtNL();
 
 	if (_digp->pubkey_algo == 0) {
 	    _digp->version = v->version;
@@ -518,11 +450,6 @@ static int pgpPrtSig(pgpTag tag, const uint8_t *h, size_t hlen,
 	if (hlen <= sizeof(*v))
 	    return 1;
 
-	pgpPrtVal("V4 ", PGPVAL_TAG, tag);
-	pgpPrtVal(" ", PGPVAL_PUBKEYALGO, v->pubkey_algo);
-	pgpPrtVal(" ", PGPVAL_HASHALGO, v->hash_algo);
-	pgpPrtVal(" ", PGPVAL_SIGTYPE, v->sigtype);
-	pgpPrtNL();
 
 	p = &v->hashlen[0];
 	if (pgpGet(v->hashlen, sizeof(v->hashlen), hend, &plen))
@@ -556,8 +483,6 @@ static int pgpPrtSig(pgpTag tag, const uint8_t *h, size_t hlen,
 
 	if (h + hlen - p < 2)
 	    return 1;
-	pgpPrtHex(" signhash16", p, 2);
-	pgpPrtNL();
 
 	if (_digp->pubkey_algo == 0) {
 	    _digp->version = v->version;
@@ -652,10 +577,6 @@ static int pgpPrtKey(pgpTag tag, const uint8_t *h, size_t hlen,
     {   pgpPktKeyV4 v = (pgpPktKeyV4)h;
 
 	if (hlen > sizeof(*v)) {
-	    pgpPrtVal("V4 ", PGPVAL_TAG, tag);
-	    pgpPrtVal(" ", PGPVAL_PUBKEYALGO, v->pubkey_algo);
-	    pgpPrtTime(" ", v->time, sizeof(v->time));
-	    pgpPrtNL();
 
 	    /* If _digp->hash is not NULL then signature is already loaded */
 	    if (_digp->hash == NULL) {
@@ -678,10 +599,6 @@ static int pgpPrtKey(pgpTag tag, const uint8_t *h, size_t hlen,
 static int pgpPrtUserID(pgpTag tag, const uint8_t *h, size_t hlen,
 			pgpDigParams _digp)
 {
-    pgpPrtVal("", PGPVAL_TAG, tag);
-    if (_print)
-	fprintf(stderr, " \"%.*s\"", (int)hlen, (const char *)h);
-    pgpPrtNL();
     free(_digp->userid);
     _digp->userid = memcpy(xmalloc(hlen+1), h, hlen);
     _digp->userid[hlen] = '\0';
@@ -831,9 +748,6 @@ static int pgpPrtPkt(struct pgpPkt *p, pgpDigParams _digp)
     case PGPTAG_PRIVATE_62:
     case PGPTAG_CONTROL:
     default:
-	pgpPrtVal("", PGPVAL_TAG, p->tag);
-	pgpPrtHex("", p->body, p->blen);
-	pgpPrtNL();
 	break;
     }
 
