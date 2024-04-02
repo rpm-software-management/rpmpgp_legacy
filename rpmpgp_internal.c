@@ -693,24 +693,6 @@ static int pgpPrtPkt(struct pgpPkt *p, pgpDigParams _digp)
     case PGPTAG_RESERVED:
 	rc = -1;
 	break;
-    case PGPTAG_COMMENT:
-    case PGPTAG_COMMENT_OLD:
-    case PGPTAG_PUBLIC_SUBKEY:
-    case PGPTAG_SECRET_KEY:
-    case PGPTAG_SECRET_SUBKEY:
-    case PGPTAG_PUBLIC_SESSION_KEY:
-    case PGPTAG_SYMMETRIC_SESSION_KEY:
-    case PGPTAG_COMPRESSED_DATA:
-    case PGPTAG_SYMMETRIC_DATA:
-    case PGPTAG_MARKER:
-    case PGPTAG_LITERAL_DATA:
-    case PGPTAG_TRUST:
-    case PGPTAG_PHOTOID:
-    case PGPTAG_ENCRYPTED_MDC:
-    case PGPTAG_MDC:
-    case PGPTAG_PRIVATE_60:
-    case PGPTAG_PRIVATE_62:
-    case PGPTAG_CONTROL:
     default:
 	break;
     }
