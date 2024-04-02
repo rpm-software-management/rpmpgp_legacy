@@ -79,24 +79,6 @@ struct pgpDigParams_s {
 };
 
 /** \ingroup rpmpgp
- * Return value of an OpenPGP string.
- * @param vs		table of (string,value) pairs
- * @param s		string token to lookup
- * @param se		end-of-string address
- * @return		byte value
- */
-static inline
-int pgpValTok(pgpValTbl vs, const char * s, const char * se)
-{
-    do {
-	size_t vlen = strlen(vs->str);
-	if (vlen <= (se-s) && rstreqn(s, vs->str, vlen))
-	    break;
-    } while ((++vs)->val != -1);
-    return vs->val;
-}
-
-/** \ingroup rpmpgp
  * Decode length from 1, 2, or 5 octet body length encoding, used in
  * new format packet headers and V4 signature subpackets.
  * Partial body lengths are (intentionally) not supported.
@@ -202,32 +184,6 @@ static int decodePkt(const uint8_t *p, size_t plen, struct pgpPkt *pkt)
     }
 
     return rc;
-}
-
-#define CRC24_INIT	0xb704ce
-#define CRC24_POLY	0x1864cfb
-
-/** \ingroup rpmpgp
- * Return CRC of a buffer.
- * @param octets	bytes
- * @param len		no. of bytes
- * @return		crc of buffer
- */
-static inline
-unsigned int pgpCRC(const uint8_t *octets, size_t len)
-{
-    unsigned int crc = CRC24_INIT;
-    size_t i;
-
-    while (len--) {
-	crc ^= (*octets++) << 16;
-	for (i = 0; i < 8; i++) {
-	    crc <<= 1;
-	    if (crc & 0x1000000)
-		crc ^= CRC24_POLY;
-	}
-    }
-    return crc & 0xffffff;
 }
 
 static int pgpVersion(const uint8_t *h, size_t hlen, uint8_t *version)
@@ -636,17 +592,6 @@ static int getPubkeyFingerprint(const uint8_t *h, size_t hlen,
     return rc;
 }
 
-int pgpPubkeyFingerprint(const uint8_t * pkt, size_t pktlen,
-                         uint8_t **fp, size_t *fplen)
-{
-    struct pgpPkt p;
-
-    if (decodePkt(pkt, pktlen, &p))
-	return -1;
-
-    return getPubkeyFingerprint(p.body, p.blen, fp, fplen);
-}
-
 static int getKeyID(const uint8_t *h, size_t hlen, pgpKeyID_t keyid)
 {
     uint8_t *fp = NULL;
@@ -657,16 +602,6 @@ static int getKeyID(const uint8_t *h, size_t hlen, pgpKeyID_t keyid)
 	free(fp);
     }
     return rc;
-}
-
-int pgpPubkeyKeyID(const uint8_t * pkt, size_t pktlen, pgpKeyID_t keyid)
-{
-    struct pgpPkt p;
-
-    if (decodePkt(pkt, pktlen, &p))
-	return -1;
-    
-    return getKeyID(p.body, p.blen, keyid);
 }
 
 static int pgpPrtPkt(struct pgpPkt *p, pgpDigParams _digp)
@@ -1087,6 +1022,102 @@ rpmRC pgpVerifySignature2(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx
     return pgpVerifySignature(key, sig, hashctx);
 }
 
+int pgpPubKeyCertLen(const uint8_t *pkts, size_t pktslen, size_t *certlen)
+{
+    const uint8_t *p = pkts;
+    const uint8_t *pend = pkts + pktslen;
+    struct pgpPkt pkt;
+
+    while (p < pend) {
+	if (decodePkt(p, (pend - p), &pkt))
+	    return -1;
+
+	if (pkt.tag == PGPTAG_PUBLIC_KEY && pkts != p) {
+	    *certlen = p - pkts;
+	    return 0;
+	}
+
+	p += (pkt.body - pkt.head) + pkt.blen;
+    }
+
+    *certlen = pktslen;
+
+    return 0;
+}
+
+int pgpPubkeyKeyID(const uint8_t * pkt, size_t pktlen, pgpKeyID_t keyid)
+{
+    struct pgpPkt p;
+
+    if (decodePkt(pkt, pktlen, &p))
+	return -1;
+    return getKeyID(p.body, p.blen, keyid);
+}
+
+int pgpPubkeyFingerprint(const uint8_t * pkt, size_t pktlen,
+                         uint8_t **fp, size_t *fplen)
+{
+    struct pgpPkt p;
+
+    if (decodePkt(pkt, pktlen, &p))
+	return -1;
+    return getPubkeyFingerprint(p.body, p.blen, fp, fplen);
+}
+
+
+rpmRC pgpPubKeyLint(const uint8_t *pkts, size_t pktslen, char **explanation)
+{
+    *explanation = NULL;
+    return RPMRC_OK;
+}
+
+
+/* armor handling */
+
+/** \ingroup rpmpgp
+ * Return value of an OpenPGP string.
+ * @param vs		table of (string,value) pairs
+ * @param s		string token to lookup
+ * @param se		end-of-string address
+ * @return		byte value
+ */
+static inline
+int pgpValTok(pgpValTbl vs, const char * s, const char * se)
+{
+    do {
+	size_t vlen = strlen(vs->str);
+	if (vlen <= (se-s) && rstreqn(s, vs->str, vlen))
+	    break;
+    } while ((++vs)->val != -1);
+    return vs->val;
+}
+
+#define CRC24_INIT	0xb704ce
+#define CRC24_POLY	0x1864cfb
+
+/** \ingroup rpmpgp
+ * Return CRC of a buffer.
+ * @param octets	bytes
+ * @param len		no. of bytes
+ * @return		crc of buffer
+ */
+static inline
+unsigned int pgpCRC(const uint8_t *octets, size_t len)
+{
+    unsigned int crc = CRC24_INIT;
+    size_t i;
+
+    while (len--) {
+	crc ^= (*octets++) << 16;
+	for (i = 0; i < 8; i++) {
+	    crc <<= 1;
+	    if (crc & 0x1000000)
+		crc ^= CRC24_POLY;
+	}
+    }
+    return crc & 0xffffff;
+}
+
 static pgpArmor decodePkts(uint8_t *b, uint8_t **pkt, size_t *pktlen)
 {
     const char * enc = NULL;
@@ -1232,29 +1263,6 @@ pgpArmor pgpParsePkts(const char *armor, uint8_t ** pkt, size_t * pktlen)
     return ec;
 }
 
-int pgpPubKeyCertLen(const uint8_t *pkts, size_t pktslen, size_t *certlen)
-{
-    const uint8_t *p = pkts;
-    const uint8_t *pend = pkts + pktslen;
-    struct pgpPkt pkt;
-
-    while (p < pend) {
-	if (decodePkt(p, (pend - p), &pkt))
-	    return -1;
-
-	if (pkt.tag == PGPTAG_PUBLIC_KEY && pkts != p) {
-	    *certlen = p - pkts;
-	    return 0;
-	}
-
-	p += (pkt.body - pkt.head) + pkt.blen;
-    }
-
-    *certlen = pktslen;
-
-    return 0;
-}
-
 char * pgpArmorWrap(int atype, const unsigned char * s, size_t ns)
 {
     char *buf = NULL, *val = NULL;
@@ -1274,10 +1282,4 @@ char * pgpArmorWrap(int atype, const unsigned char * s, size_t ns)
 
     free(buf);
     return val;
-}
-
-rpmRC pgpPubKeyLint(const uint8_t *pkts, size_t pktslen, char **explanation)
-{
-    *explanation = NULL;
-    return RPMRC_OK;
 }
