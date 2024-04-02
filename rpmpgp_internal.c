@@ -1079,23 +1079,23 @@ int pgpPubKeyCertLen(const uint8_t *pkts, size_t pktslen, size_t *certlen)
     return 0;
 }
 
-int pgpPubkeyKeyID(const uint8_t * pkt, size_t pktlen, pgpKeyID_t keyid)
+int pgpPubkeyKeyID(const uint8_t * pkts, size_t pktslen, pgpKeyID_t keyid)
 {
-    struct pgpPkt p;
+    struct pgpPkt pkt;
 
-    if (decodePkt(pkt, pktlen, &p))
+    if (decodePkt(pkts, pktslen, &pkt))
 	return -1;
-    return getKeyID(p.body, p.blen, keyid);
+    return getKeyID(pkt.body, pkt.blen, keyid);
 }
 
-int pgpPubkeyFingerprint(const uint8_t * pkt, size_t pktlen,
+int pgpPubkeyFingerprint(const uint8_t * pkts, size_t pktslen,
                          uint8_t **fp, size_t *fplen)
 {
-    struct pgpPkt p;
+    struct pgpPkt pkt;
 
-    if (decodePkt(pkt, pktlen, &p))
+    if (decodePkt(pkts, pktslen, &pkt))
 	return -1;
-    return getPubkeyFingerprint(p.body, p.blen, fp, fplen);
+    return getPubkeyFingerprint(pkt.body, pkt.blen, fp, fplen);
 }
 
 
