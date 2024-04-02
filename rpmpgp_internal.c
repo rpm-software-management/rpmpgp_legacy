@@ -79,6 +79,22 @@ struct pgpDigParams_s {
 };
 
 /** \ingroup rpmpgp
+ * Return (native-endian) integer from big-endian representation.
+ * @param s            pointer to big-endian integer
+ * @param nbytes       no. of bytes
+ * @return             native-endian integer
+ */
+static inline
+unsigned int pgpGrab(const uint8_t *s, size_t nbytes)
+{
+    size_t i = 0;
+    size_t nb = (nbytes <= sizeof(i) ? nbytes : sizeof(i));
+    while (nb--)
+	i = (i << 8) | *s++;
+    return i;
+}
+
+/** \ingroup rpmpgp
  * Decode length from 1, 2, or 5 octet body length encoding, used in
  * new format packet headers.
  * Partial body lengths are (intentionally) not supported.
@@ -239,7 +255,7 @@ int pgpSignatureType(pgpDigParams _digp)
     return rc;
 }
 
-static int pgpPrtSubType(const uint8_t *h, size_t hlen, pgpSigType sigtype, 
+static int pgpPrtSubType(const uint8_t *h, size_t hlen, pgpSigType sigtype,
 			 pgpDigParams _digp, int hashed)
 {
     const uint8_t *p = h;
@@ -468,7 +484,7 @@ static uint8_t curve_oids[] = {
     PGPCURVE_BRAINPOOL_P512R1,	0x09, 0x2b, 0x24, 0x03, 0x03, 0x02, 0x08, 0x01, 0x01, 0x0d,
     PGPCURVE_ED25519,		0x09, 0x2b, 0x06, 0x01, 0x04, 0x01, 0xda, 0x47, 0x0f, 0x01,
     PGPCURVE_CURVE25519,	0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0x97, 0x55, 0x01, 0x05, 0x01,
-    0,   
+    0,
 };
 
 static int pgpCurveByOid(const uint8_t *p, int l)
