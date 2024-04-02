@@ -80,7 +80,7 @@ struct pgpDigParams_s {
 
 /** \ingroup rpmpgp
  * Decode length from 1, 2, or 5 octet body length encoding, used in
- * new format packet headers and V4 signature subpackets.
+ * new format packet headers.
  * Partial body lengths are (intentionally) not supported.
  * @param s		pointer to length encoding buffer
  * @param slen		buffer size
@@ -104,9 +104,43 @@ size_t pgpLen(const uint8_t *s, size_t slen, size_t * lenp)
     } else if (*s < 224 && slen > 2) {
 	lenlen = 2;
 	dlen = (((s[0]) - 192) << 8) + s[1] + 192;
-    } else if (*s == 255 && slen > 5) {
+    } else if (*s == 255 && slen > 5 && s[1] == 0) {
 	lenlen = 5;
-	dlen = pgpGrab(s+1, 4);
+	dlen = s[2] << 16 | s[3] << 8 | s[4];
+    }
+
+    if (slen - lenlen < dlen)
+	lenlen = 0;
+
+    if (lenlen)
+	*lenp = dlen;
+
+    return lenlen;
+}
+
+/** \ingroup rpmpgp
+ * Decode length from 1, 2, or 5 octet body length encoding, used in
+ * V4 signature subpackets.
+ * @param s		pointer to length encoding buffer
+ * @param slen		buffer size
+ * @param[out] *lenp	decoded length
+ * @return		no. of bytes used to encode the length, 0 on error
+ */
+static inline
+size_t pgpSubPkgLen(const uint8_t *s, size_t slen, size_t * lenp)
+{
+    size_t dlen = 0;
+    size_t lenlen = 0;
+
+    if (*s < 192) {
+	lenlen = 1;
+	dlen = *s;
+    } else if (*s < 255 && slen > 2) {
+	lenlen = 2;
+	dlen = (((s[0]) - 192) << 8) + s[1] + 192;
+    } else if (*s == 255 && slen > 5 && s[1] == 0) {
+	lenlen = 5;
+	dlen = s[2] << 16 | s[3] << 8 | s[4];
     }
 
     if (slen - lenlen < dlen)
@@ -214,7 +248,7 @@ static int pgpPrtSubType(const uint8_t *h, size_t hlen, pgpSigType sigtype,
 
     while (hlen > 0 && rc == 0) {
 	int impl = 0;
-	i = pgpLen(p, hlen, &plen);
+	i = pgpSubPkgLen(p, hlen, &plen);
 	if (i == 0 || plen < 1 || i + plen > hlen)
 	    break;
 
