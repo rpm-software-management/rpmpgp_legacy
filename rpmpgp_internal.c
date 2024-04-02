@@ -990,7 +990,7 @@ int pgpPrtParamsSubkeys(const uint8_t *pkts, size_t pktlen,
 
 	    digps[count] = pgpDigParamsNew(PGPTAG_PUBLIC_SUBKEY);
 	    /* Copy UID from main key to subkey */
-	    digps[count]->userid = xstrdup(mainkey->userid);
+	    digps[count]->userid = mainkey->userid ? xstrdup(mainkey->userid) : NULL;
 
 	    if (getKeyID(pkt.body, pkt.blen, digps[count]->signid)) {
 		pgpDigParamsFree(digps[count]);
