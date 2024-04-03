@@ -95,6 +95,28 @@ unsigned int pgpGrab(const uint8_t *s, size_t nbytes)
 }
 
 /** \ingroup rpmpgp
+ * Decode length in old format packet headers.
+ * @param s		pointer to packet (including tag)
+ * @param slen		buffer size
+ * @param[out] *lenp	decoded length
+ * @return		no. of bytes used to encode the length, 0 on error
+ */
+static inline
+size_t pgpOldLen(const uint8_t *s, size_t slen, size_t * lenp)
+{
+    size_t dlen;
+    size_t lenlen = (1 << (s[0] & 0x3));
+    /* Reject indefinite length packets and check bounds */
+    if (lenlen == 8 || slen < lenlen + 1)
+	return 0;
+    dlen = pgpGrab(s + 1, lenlen);
+    if (slen - (1 + lenlen) < dlen)
+	return 0;
+    *lenp = dlen;
+    return lenlen;
+}
+
+/** \ingroup rpmpgp
  * Decode length from 1, 2, or 5 octet body length encoding, used in
  * new format packet headers.
  * Partial body lengths are (intentionally) not supported.
@@ -106,8 +128,7 @@ unsigned int pgpGrab(const uint8_t *s, size_t nbytes)
 static inline
 size_t pgpLen(const uint8_t *s, size_t slen, size_t * lenp)
 {
-    size_t dlen = 0;
-    size_t lenlen = 0;
+    size_t dlen, lenlen;
 
     /*
      * Callers can only ensure we'll always have the first byte, beyond
@@ -123,20 +144,19 @@ size_t pgpLen(const uint8_t *s, size_t slen, size_t * lenp)
     } else if (*s == 255 && slen > 5 && s[1] == 0) {
 	lenlen = 5;
 	dlen = s[2] << 16 | s[3] << 8 | s[4];
+    } else {
+	return 0;
     }
-
     if (slen - lenlen < dlen)
-	lenlen = 0;
-
-    if (lenlen)
-	*lenp = dlen;
-
+	return 0;
+    *lenp = dlen;
     return lenlen;
 }
 
 /** \ingroup rpmpgp
  * Decode length from 1, 2, or 5 octet body length encoding, used in
- * V4 signature subpackets.
+ * V4 signature subpackets. Note that this is slightly different from
+ * the pgpLen function
  * @param s		pointer to length encoding buffer
  * @param slen		buffer size
  * @param[out] *lenp	decoded length
@@ -145,8 +165,7 @@ size_t pgpLen(const uint8_t *s, size_t slen, size_t * lenp)
 static inline
 size_t pgpSubPkgLen(const uint8_t *s, size_t slen, size_t * lenp)
 {
-    size_t dlen = 0;
-    size_t lenlen = 0;
+    size_t dlen, lenlen;
 
     if (*s < 192) {
 	lenlen = 1;
@@ -157,14 +176,12 @@ size_t pgpSubPkgLen(const uint8_t *s, size_t slen, size_t * lenp)
     } else if (*s == 255 && slen > 5 && s[1] == 0) {
 	lenlen = 5;
 	dlen = s[2] << 16 | s[3] << 8 | s[4];
+    } else {
+	return 0;
     }
-
     if (slen - lenlen < dlen)
-	lenlen = 0;
-
-    if (lenlen)
-	*lenp = dlen;
-
+	return 0;
+    *lenp = dlen;
     return lenlen;
 }
 
@@ -174,33 +191,6 @@ struct pgpPkt {
     const uint8_t *body;	/* pointer to packet body */
     size_t blen;		/* length of body in bytes */
 };
-
-/** \ingroup rpmpgp
- * Read a length field `nbytes` long.  Checks that the buffer is big enough to
- * hold `nbytes + *valp` bytes.
- * @param s		pointer to read from
- * @param nbytes	length of length field
- * @param send		pointer past end of buffer
- * @param[out] *valp	decoded length
- * @return		0 if buffer can hold `nbytes + *valp` of data,
- * 			otherwise -1.
- */
-static int pgpGet(const uint8_t *s, size_t nbytes, const uint8_t *send,
-		  size_t *valp)
-{
-    int rc = -1;
-
-    *valp = 0;
-    if (nbytes <= 4 && send - s >= nbytes) {
-	unsigned int val = pgpGrab(s, nbytes);
-	if (send - s - nbytes >= val) {
-	    rc = 0;
-	    *valp = val;
-	}
-    }
-
-    return rc;
-}
 
 static int decodePkt(const uint8_t *p, size_t plen, struct pgpPkt *pkt)
 {
@@ -216,11 +206,8 @@ static int decodePkt(const uint8_t *p, size_t plen, struct pgpPkt *pkt)
 	    lenlen = pgpLen(p+1, plen-1, &pkt->blen);
 	    pkt->tag = (p[0] & 0x3f);
 	} else {
-	    /* Old format packet, body length encoding in tag byte */
-	    lenlen = (1 << (p[0] & 0x3));
-	    /* Reject indefinite length packets and check bounds */
-	    if (pgpGet(p + 1, lenlen, p + plen, &pkt->blen))
-		return rc;
+	    /* Old format packet */
+	    lenlen = pgpOldLen(p, plen, &pkt->blen);
 	    pkt->tag = (p[0] >> 2) & 0xf;
 	}
 	hlen = lenlen + 1;
@@ -424,13 +411,12 @@ static int pgpPrtSig(pgpTag tag, const uint8_t *h, size_t hlen,
 	/* parse both the hashed and unhashed subpackets */
 	p = &v->hashlen[0];
 	for (hashed = 1; hashed >= 0; hashed--) {
-	    if (pgpGet(p, 2, hend, &plen))
+	    if (p > hend || hend - p < 2)
 		return 1;
+	    plen = pgpGrab(p, 2);
 	    p += 2;
-
-	    if ((p + plen) > hend)
+	    if (hend - p < plen)
 		return 1;
-
 	    if (hashed &&_digp->pubkey_algo == 0) {
 		_digp->hashlen = sizeof(*v) + plen;
 		_digp->hash = memcpy(xmalloc(_digp->hashlen), v, _digp->hashlen);
@@ -443,9 +429,8 @@ static int pgpPrtSig(pgpTag tag, const uint8_t *h, size_t hlen,
 	if (!(_digp->saved & PGPDIG_SIG_HAS_CREATION_TIME))
 	    return 1; /* RFC 4880 §5.2.3.4 creation time MUST be present */
 
-	if (h + hlen - p < 2)
+	if (p > hend || hend - p < 2)
 	    return 1;
-
 	if (_digp->pubkey_algo == 0) {
 	    _digp->version = v->version;
 	    _digp->sigtype = v->sigtype;
@@ -453,8 +438,8 @@ static int pgpPrtSig(pgpTag tag, const uint8_t *h, size_t hlen,
 	    _digp->hash_algo = v->hash_algo;
 	    memcpy(_digp->signhash16, p, sizeof(_digp->signhash16));
 	}
-
 	p += 2;
+
 	if (p > hend)
 	    return 1;
 
