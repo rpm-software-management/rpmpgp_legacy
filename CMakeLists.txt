@@ -12,6 +12,6 @@ if (WITH_OPENSSL)
 else()
 	target_sources(rpmpgp_legacy PRIVATE digest_libgcrypt.c)
 endif()
-target_include_directories(rpmpgp_legacy PRIVATE ..)
+target_include_directories(rpmpgp_legacy PRIVATE ${CMAKE_SOURCE_DIR}/rpmio)
 target_include_directories(rpmpgp_legacy PRIVATE ${Intl_INCLUDE_DIRS})
 
