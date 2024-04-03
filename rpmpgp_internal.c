@@ -92,13 +92,16 @@ unsigned int pgpGrab(const uint8_t *s, size_t nbytes)
  * @param s		pointer to packet (including tag)
  * @param slen		buffer size
  * @param[out] *lenp	decoded length
- * @return		no. of bytes used to encode the length, 0 on error
+ * @return		packet header length, 0 on error
  */
 static inline
 size_t pgpOldLen(const uint8_t *s, size_t slen, size_t * lenp)
 {
-    size_t dlen;
-    size_t lenlen = (1 << (s[0] & 0x3));
+    size_t dlen, lenlen;
+
+    if (slen < 2)
+	return 0;
+    lenlen = 1 << (s[0] & 0x3);
     /* Reject indefinite length packets and check bounds */
     if (lenlen == 8 || slen < lenlen + 1)
 	return 0;
@@ -106,54 +109,49 @@ size_t pgpOldLen(const uint8_t *s, size_t slen, size_t * lenp)
     if (slen - (1 + lenlen) < dlen)
 	return 0;
     *lenp = dlen;
-    return lenlen;
+    return lenlen + 1;
 }
 
 /** \ingroup rpmpgp
  * Decode length from 1, 2, or 5 octet body length encoding, used in
  * new format packet headers.
  * Partial body lengths are (intentionally) not supported.
- * @param s		pointer to length encoding buffer
+ * @param s		pointer to packet (including tag)
  * @param slen		buffer size
  * @param[out] *lenp	decoded length
- * @return		no. of bytes used to encode the length, 0 on error
+ * @return		packet header length, 0 on error
  */
 static inline
 size_t pgpNewLen(const uint8_t *s, size_t slen, size_t * lenp)
 {
-    size_t dlen, lenlen;
+    size_t dlen, hlen;
 
-    /*
-     * Callers can only ensure we'll always have the first byte, beyond
-     * that the required size is not known until we decode it so we need
-     * to check if we have enough bytes to read the size as we go.
-     */
-    if (*s < 192) {
-	lenlen = 1;
-	dlen = *s;
-    } else if (*s < 224 && slen > 2) {
-	lenlen = 2;
-	dlen = (((s[0]) - 192) << 8) + s[1] + 192;
-    } else if (*s == 255 && slen > 5 && s[1] == 0) {
-	lenlen = 5;
-	dlen = s[2] << 16 | s[3] << 8 | s[4];
+    if (s[1] < 192 && slen > 1) {
+	hlen = 2;
+	dlen = s[1];
+    } else if (s[1] < 224 && slen > 3) {
+	hlen = 3;
+	dlen = (((s[1]) - 192) << 8) + s[2] + 192;
+    } else if (s[1] == 255 && slen > 6 && s[2] == 0) {
+	hlen = 6;
+	dlen = s[3] << 16 | s[4] << 8 | s[5];
     } else {
 	return 0;
     }
-    if (slen - lenlen < dlen)
+    if (slen - hlen < dlen)
 	return 0;
     *lenp = dlen;
-    return lenlen;
+    return hlen;
 }
 
 /** \ingroup rpmpgp
  * Decode length from 1, 2, or 5 octet body length encoding, used in
  * V4 signature subpackets. Note that this is slightly different from
- * the pgpLen function
- * @param s		pointer to length encoding buffer
+ * the pgpNewLen function.
+ * @param s		pointer to subpacket (including tag)
  * @param slen		buffer size
  * @param[out] *lenp	decoded length
- * @return		no. of bytes used to encode the length, 0 on error
+ * @return		subpacket header length (excluding type), 0 on error
  */
 static inline
 size_t pgpSubPktLen(const uint8_t *s, size_t slen, size_t * lenp)
@@ -191,22 +189,20 @@ static int decodePkt(const uint8_t *p, size_t plen, struct pgpPkt *pkt)
 
     /* Valid PGP packet header must always have two or more bytes in it */
     if (p && plen >= 2 && p[0] & 0x80) {
-	size_t lenlen = 0;
-	size_t hlen = 0;
+	size_t hlen;
 
 	if (p[0] & 0x40) {
 	    /* New format packet, body length encoding in second byte */
-	    lenlen = pgpNewLen(p+1, plen-1, &pkt->blen);
+	    hlen = pgpNewLen(p, plen, &pkt->blen);
 	    pkt->tag = (p[0] & 0x3f);
 	} else {
 	    /* Old format packet */
-	    lenlen = pgpOldLen(p, plen, &pkt->blen);
+	    hlen = pgpOldLen(p, plen, &pkt->blen);
 	    pkt->tag = (p[0] >> 2) & 0xf;
 	}
-	hlen = lenlen + 1;
 
 	/* Does the packet header and its body fit in our boundaries? */
-	if (lenlen && (hlen + pkt->blen <= plen)) {
+	if (hlen && (hlen + pkt->blen <= plen)) {
 	    pkt->head = p;
 	    pkt->body = pkt->head + hlen;
 	    rc = 0;
@@ -239,17 +235,16 @@ static int pgpPrtSubType(const uint8_t *h, size_t hlen, pgpSigType sigtype,
 			 pgpDigParams _digp, int hashed)
 {
     const uint8_t *p = h;
-    size_t plen = 0, i;
     int rc = 0;
 
     while (hlen > 0 && rc == 0) {
+	size_t plen = 0, lenlen;
 	int impl = 0;
-	i = pgpSubPktLen(p, hlen, &plen);
-	if (i == 0 || plen < 1 || i + plen > hlen)
+	lenlen = pgpSubPktLen(p, hlen, &plen);
+	if (lenlen == 0 || plen < 1 || lenlen + plen > hlen)
 	    break;
-
-	p += i;
-	hlen -= i;
+	p += lenlen;
+	hlen -= lenlen;
 
 	switch (*p & ~PGPSUBTYPE_CRITICAL) {
 	case PGPSUBTYPE_SIG_CREATE_TIME:  /* signature creation time */
@@ -266,23 +261,20 @@ static int pgpPrtSubType(const uint8_t *h, size_t hlen, pgpSigType sigtype,
 	    break;
 
 	case PGPSUBTYPE_ISSUER_KEYID:	/* issuer key ID */
+	    if (plen-1 != sizeof(_digp->signid))
+		break; /* other lengths not understood */
 	    impl = *p;
 	    if (!(_digp->saved & PGPDIG_SAVED_ID) &&
-		(sigtype == PGPSIGTYPE_POSITIVE_CERT || sigtype == PGPSIGTYPE_BINARY || sigtype == PGPSIGTYPE_TEXT || sigtype == PGPSIGTYPE_STANDALONE))
-	    {
-		if (plen-1 != sizeof(_digp->signid))
-		    break;
+		(sigtype == PGPSIGTYPE_POSITIVE_CERT || sigtype == PGPSIGTYPE_BINARY || sigtype == PGPSIGTYPE_TEXT || sigtype == PGPSIGTYPE_STANDALONE)) {
 		_digp->saved |= PGPDIG_SAVED_ID;
 		memcpy(_digp->signid, p+1, sizeof(_digp->signid));
 	    }
 	    break;
 	case PGPSUBTYPE_KEY_FLAGS: /* Key usage flags */
-	    /* Subpackets in the unhashed section cannot be trusted */
 	    if (!hashed)
-		break;
-	    /* Reject duplicate key usage flags */
+		break;	/* Subpackets in the unhashed section cannot be trusted */
 	    if (_digp->saved & PGPDIG_SIG_HAS_KEY_FLAGS)
-		return 1;
+		return 1;	/* Reject duplicate key usage flags */
 	    impl = *p;
 	    _digp->saved |= PGPDIG_SIG_HAS_KEY_FLAGS;
 	    _digp->key_flags = plen >= 2 ? p[1] : 0;
