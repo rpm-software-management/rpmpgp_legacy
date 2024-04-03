@@ -416,40 +416,32 @@ static int pgpPrtSig(pgpTag tag, const uint8_t *h, size_t hlen,
     case 4:
     {   pgpPktSigV4 v = (pgpPktSigV4)h;
 	const uint8_t *const hend = h + hlen;
+	int hashed;
 
 	if (hlen <= sizeof(*v))
 	    return 1;
 
-
+	/* parse both the hashed and unhashed subpackets */
 	p = &v->hashlen[0];
-	if (pgpGet(v->hashlen, sizeof(v->hashlen), hend, &plen))
-	    return 1;
-	p += sizeof(v->hashlen);
+	for (hashed = 1; hashed >= 0; hashed--) {
+	    if (pgpGet(p, 2, hend, &plen))
+		return 1;
+	    p += 2;
 
-	if ((p + plen) > hend)
-	    return 1;
+	    if ((p + plen) > hend)
+		return 1;
 
-	if (_digp->pubkey_algo == 0) {
-	    _digp->hashlen = sizeof(*v) + plen;
-	    _digp->hash = memcpy(xmalloc(_digp->hashlen), v, _digp->hashlen);
+	    if (hashed &&_digp->pubkey_algo == 0) {
+		_digp->hashlen = sizeof(*v) + plen;
+		_digp->hash = memcpy(xmalloc(_digp->hashlen), v, _digp->hashlen);
+	    }
+	    if (pgpPrtSubType(p, plen, v->sigtype, _digp, hashed))
+		return 1;
+	    p += plen;
 	}
-	if (pgpPrtSubType(p, plen, v->sigtype, _digp, 1))
-	    return 1;
-	p += plen;
 
 	if (!(_digp->saved & PGPDIG_SIG_HAS_CREATION_TIME))
-	    return 1; /* RFC 4880 §5.2.3.4 creation time MUST be hashed */
-
-	if (pgpGet(p, 2, hend, &plen))
-	    return 1;
-	p += 2;
-
-	if ((p + plen) > hend)
-	    return 1;
-
-	if (pgpPrtSubType(p, plen, v->sigtype, _digp, 0))
-	    return 1;
-	p += plen;
+	    return 1; /* RFC 4880 §5.2.3.4 creation time MUST be present */
 
 	if (h + hlen - p < 2)
 	    return 1;
