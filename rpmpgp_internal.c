@@ -71,20 +71,16 @@ struct pgpDigParams_s {
     pgpDigAlg alg;
 };
 
-/** \ingroup rpmpgp
- * Return (native-endian) integer from big-endian representation.
- * @param s            pointer to big-endian integer
- * @param nbytes       no. of bytes
- * @return             native-endian integer
- */
 static inline
-unsigned int pgpGrab(const uint8_t *s, size_t nbytes)
+unsigned int pgpGrab2(const uint8_t *s)
 {
-    size_t i = 0;
-    size_t nb = (nbytes <= sizeof(i) ? nbytes : sizeof(i));
-    while (nb--)
-	i = (i << 8) | *s++;
-    return i;
+    return s[0] << 8 | s[1];
+}
+
+static inline
+unsigned int pgpGrab4(const uint8_t *s)
+{
+    return s[0] << 24 | s[1] << 16 | s[2] << 8 | s[3];
 }
 
 /** \ingroup rpmpgp
@@ -105,7 +101,14 @@ size_t pgpOldLen(const uint8_t *s, size_t slen, size_t * lenp)
     /* Reject indefinite length packets and check bounds */
     if (lenlen == 8 || slen < lenlen + 1)
 	return 0;
-    dlen = pgpGrab(s + 1, lenlen);
+    if (lenlen == 1)
+	dlen = s[1];
+    else if (lenlen == 2)
+	dlen = s[1] << 8 | s[2];
+    else if (lenlen == 4 && s[1] == 0)
+	dlen = s[2] << 16 | s[3] << 8 | s[4];
+    else
+	return 0;
     if (slen - (1 + lenlen) < dlen)
 	return 0;
     *lenp = dlen;
@@ -256,7 +259,7 @@ static int pgpPrtSubType(const uint8_t *h, size_t hlen, pgpSigType sigtype,
 		return 1; /* duplicate timestamps not allowed */
 	    impl = *p;
 	    if (!(_digp->saved & PGPDIG_SAVED_TIME))
-		_digp->time = pgpGrab(p+1, sizeof(_digp->time));
+		_digp->time = pgpGrab4(p + 1);
 	    _digp->saved |= PGPDIG_SAVED_TIME | PGPDIG_SIG_HAS_CREATION_TIME;
 	    break;
 
@@ -364,16 +367,13 @@ static int pgpPrtSig(pgpTag tag, const uint8_t *h, size_t hlen,
 
 	if (hlen <= sizeof(*v) || v->hashlen != 5)
 	    return 1;
-
-	plen = pgpGrab(v->signhash16, sizeof(v->signhash16));
-
 	if (_digp->pubkey_algo == 0) {
 	    _digp->version = v->version;
 	    _digp->hashlen = v->hashlen;
 	    _digp->sigtype = v->sigtype;
 	    _digp->hash = memcpy(xmalloc(v->hashlen), &v->sigtype, v->hashlen);
 	    if (!(_digp->saved & PGPDIG_SAVED_TIME))
-		_digp->time = pgpGrab(v->time, sizeof(v->time));
+		_digp->time = pgpGrab4(v->time);
 	    if (!(_digp->saved & PGPDIG_SAVED_ID))
 		memcpy(_digp->signid, v->signid, sizeof(_digp->signid));
 	    _digp->saved = PGPDIG_SAVED_TIME | PGPDIG_SIG_HAS_CREATION_TIME | PGPDIG_SAVED_ID;
@@ -398,7 +398,7 @@ static int pgpPrtSig(pgpTag tag, const uint8_t *h, size_t hlen,
 	for (hashed = 1; hashed >= 0; hashed--) {
 	    if (p > hend || hend - p < 2)
 		return 1;
-	    plen = pgpGrab(p, 2);
+	    plen = pgpGrab2(p);
 	    p += 2;
 	    if (hend - p < plen)
 		return 1;
@@ -514,7 +514,7 @@ static int pgpPrtKey(pgpTag tag, const uint8_t *h, size_t hlen,
 	    if (_digp->hash == NULL) {
 		_digp->version = v->version;
 		if (!(_digp->saved & PGPDIG_SAVED_TIME))
-		    _digp->time = pgpGrab(v->time, sizeof(v->time));
+		    _digp->time = pgpGrab4(v->time);
 		_digp->saved |= PGPDIG_SAVED_TIME | PGPDIG_SIG_HAS_CREATION_TIME;
 	    }
 
@@ -1233,7 +1233,7 @@ static pgpArmor decodePkts(uint8_t *b, uint8_t **pkt, size_t *pktlen)
 		ec = PGPARMOR_ERR_CRC_DECODE;
 		goto exit;
 	    }
-	    crcpkt = pgpGrab(crcdec, crclen);
+	    crcpkt = crcdec[0] << 16 | crcdec[1] << 8 | crcdec[2];
 	    crcdec = _free(crcdec);
 	    dec = NULL;
 	    declen = 0;
