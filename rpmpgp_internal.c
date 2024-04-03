@@ -18,13 +18,6 @@
 
 typedef uint8_t pgpTime_t[4];
 
-typedef struct pgpPktKeyV3_s {
-    uint8_t version;	/*!< version number (3). */
-    pgpTime_t time;	/*!< time that the key was created. */
-    uint8_t valid[2];	/*!< time in days that this key is valid. */
-    uint8_t pubkey_algo;	/*!< public key algorithm. */
-} * pgpPktKeyV3;
-
 typedef struct pgpPktKeyV4_s {
     uint8_t version;	/*!< version number (4). */
     pgpTime_t time;	/*!< time that the key was created. */
