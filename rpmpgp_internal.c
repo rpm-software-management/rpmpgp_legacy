@@ -119,7 +119,7 @@ size_t pgpOldLen(const uint8_t *s, size_t slen, size_t * lenp)
  * @return		no. of bytes used to encode the length, 0 on error
  */
 static inline
-size_t pgpLen(const uint8_t *s, size_t slen, size_t * lenp)
+size_t pgpNewLen(const uint8_t *s, size_t slen, size_t * lenp)
 {
     size_t dlen, lenlen;
 
@@ -156,7 +156,7 @@ size_t pgpLen(const uint8_t *s, size_t slen, size_t * lenp)
  * @return		no. of bytes used to encode the length, 0 on error
  */
 static inline
-size_t pgpSubPkgLen(const uint8_t *s, size_t slen, size_t * lenp)
+size_t pgpSubPktLen(const uint8_t *s, size_t slen, size_t * lenp)
 {
     size_t dlen, lenlen;
 
@@ -196,7 +196,7 @@ static int decodePkt(const uint8_t *p, size_t plen, struct pgpPkt *pkt)
 
 	if (p[0] & 0x40) {
 	    /* New format packet, body length encoding in second byte */
-	    lenlen = pgpLen(p+1, plen-1, &pkt->blen);
+	    lenlen = pgpNewLen(p+1, plen-1, &pkt->blen);
 	    pkt->tag = (p[0] & 0x3f);
 	} else {
 	    /* Old format packet */
@@ -244,7 +244,7 @@ static int pgpPrtSubType(const uint8_t *h, size_t hlen, pgpSigType sigtype,
 
     while (hlen > 0 && rc == 0) {
 	int impl = 0;
-	i = pgpSubPkgLen(p, hlen, &plen);
+	i = pgpSubPktLen(p, hlen, &plen);
 	if (i == 0 || plen < 1 || i + plen > hlen)
 	    break;
 
