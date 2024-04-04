@@ -757,6 +757,24 @@ static int hashKey(DIGEST_CTX hash, const struct pgpPkt *pkt, int exptag)
     return rc;
 }
 
+static int hashUserID(DIGEST_CTX hash, const struct pgpPkt *pkt)
+{
+    int rc = -1;
+    if (pkt->tag == PGPTAG_USER_ID) {
+	uint8_t head[] = {
+	    0xb4,
+	    (pkt->blen >> 24),
+	    (pkt->blen >> 16),
+	    (pkt->blen >>  8),
+	    (pkt->blen     ),
+	};
+	rpmDigestUpdate(hash, head, 5);
+	rpmDigestUpdate(hash, pkt->body, pkt->blen);
+	rc = 0;
+    }
+    return rc;
+}
+
 static int pgpVerifySelf(pgpDigParams key, pgpDigParams selfsig,
 			const struct pgpPkt *all, int i)
 {
@@ -773,6 +791,22 @@ static int pgpVerifySelf(pgpDigParams key, pgpDigParams selfsig,
 		rc = hashKey(hash, &all[0], PGPTAG_PUBLIC_KEY);
 	    if (!rc)
 		rc = hashKey(hash, &all[i-1], PGPTAG_PUBLIC_SUBKEY);
+	}
+	break;
+    case PGPSIGTYPE_GENERIC_CERT:
+    case PGPSIGTYPE_PERSONA_CERT:
+    case PGPSIGTYPE_CASUAL_CERT:
+    case PGPSIGTYPE_POSITIVE_CERT:
+	hash = rpmDigestInit(selfsig->hash_algo, 0);
+	if (hash && i > 1) {
+	    /* find PGPTAG_USER_ID packet that is certified */
+	    while (--i > 0 && all[i].tag != PGPTAG_USER_ID)
+		;
+	    if (i) {
+		rc = hashKey(hash, &all[0], PGPTAG_PUBLIC_KEY);
+		if (!rc)
+		    rc = hashUserID(hash, &all[i]);
+	    }
 	}
 	break;
     default:
