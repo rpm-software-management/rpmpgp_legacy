@@ -873,7 +873,7 @@ static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams 
     const uint8_t *pend = pkts + pktlen;
     pgpDigParams digp = NULL;
     pgpDigParams sigdigp = NULL;
-    int i = 0;
+    int i = 0, useridpkt = 0;
     int alloced = 16; /* plenty for normal cases */
     int rc = -1; /* assume failure */
     int prevtag = 0;
@@ -924,8 +924,15 @@ static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams 
 		    digp->time = sigdigp->time;
 		    digp->saved |= PGPDIG_SAVED_TIME;
 		}
+		if (sigdigp->sigtype == PGPSIGTYPE_POSITIVE_CERT && useridpkt && !digp->userid) {
+		    if (pgpPrtPkt(all + useridpkt, digp))
+			break;
+		}
 	    }
 	    sigdigp = pgpDigParamsFree(sigdigp);
+	} else if (pkt->tag == PGPTAG_USER_ID) {
+	    /* we delay the user id package parsing until we have verified the binding signature */
+	    useridpkt = i;
 	} else {
 	    if (pgpPrtPkt(pkt, digp))
 		break;
