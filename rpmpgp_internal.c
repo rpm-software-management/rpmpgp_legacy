@@ -60,12 +60,10 @@ struct pgpDigParams_s {
     uint32_t hashlen;
     uint8_t signhash16[2];
     pgpKeyID_t signid;		/*!< key id of pubkey or signature */
-    uint8_t saved;		/*!< Various flags.  `PGPDIG_SAVED_*` are never reset.
-				 * `PGPDIG_SIG_HAS_*` are reset for each signature. */
+    uint8_t saved;		/*!< Various flags. */
 #define	PGPDIG_SAVED_TIME	(1 << 0)
 #define	PGPDIG_SAVED_ID		(1 << 1)
-#define	PGPDIG_SIG_HAS_CREATION_TIME	(1 << 2)
-#define	PGPDIG_SIG_HAS_KEY_FLAGS	(1 << 3)
+#define	PGPDIG_SAVED_KEY_FLAGS	(1 << 2)
 
     pgpDigAlg alg;		/*!< algorithm specific data like MPIs */
 };
@@ -246,12 +244,12 @@ static int pgpPrtSubType(const uint8_t *h, size_t hlen, pgpSigType sigtype,
 		break; /* RFC 4880 §5.2.3.4 creation time MUST be hashed */
 	    if (plen-1 != sizeof(_digp->time))
 		break; /* other lengths not understood */
-	    if (_digp->saved & PGPDIG_SIG_HAS_CREATION_TIME)
+	    if (_digp->saved & PGPDIG_SAVED_TIME)
 		return 1; /* duplicate timestamps not allowed */
 	    impl = *p;
 	    if (!(_digp->saved & PGPDIG_SAVED_TIME))
 		_digp->time = pgpGrab4(p + 1);
-	    _digp->saved |= PGPDIG_SAVED_TIME | PGPDIG_SIG_HAS_CREATION_TIME;
+	    _digp->saved |= PGPDIG_SAVED_TIME;
 	    break;
 
 	case PGPSUBTYPE_ISSUER_KEYID:	/* issuer key ID */
@@ -267,10 +265,10 @@ static int pgpPrtSubType(const uint8_t *h, size_t hlen, pgpSigType sigtype,
 	case PGPSUBTYPE_KEY_FLAGS: /* Key usage flags */
 	    if (!hashed)
 		break;	/* Subpackets in the unhashed section cannot be trusted */
-	    if (_digp->saved & PGPDIG_SIG_HAS_KEY_FLAGS)
+	    if (_digp->saved & PGPDIG_SAVED_KEY_FLAGS)
 		return 1;	/* Reject duplicate key usage flags */
 	    impl = *p;
-	    _digp->saved |= PGPDIG_SIG_HAS_KEY_FLAGS;
+	    _digp->saved |= PGPDIG_SAVED_KEY_FLAGS;
 	    _digp->key_flags = plen >= 2 ? p[1] : 0;
 	    break;
 
@@ -373,7 +371,7 @@ static int pgpPrtSig(pgpTag tag, const uint8_t *h, size_t hlen,
 	_digp->hash = memcpy(xmalloc(v->hashlen), &v->sigtype, v->hashlen);
 	_digp->time = pgpGrab4(v->time);
 	memcpy(_digp->signid, v->signid, sizeof(_digp->signid));
-	_digp->saved = PGPDIG_SAVED_TIME | PGPDIG_SIG_HAS_CREATION_TIME | PGPDIG_SAVED_ID;
+	_digp->saved = PGPDIG_SAVED_TIME | PGPDIG_SAVED_ID;
 	_digp->pubkey_algo = v->pubkey_algo;
 	_digp->hash_algo = v->hash_algo;
 	memcpy(_digp->signhash16, v->signhash16, sizeof(_digp->signhash16));
@@ -406,7 +404,7 @@ static int pgpPrtSig(pgpTag tag, const uint8_t *h, size_t hlen,
 	    p += plen;
 	}
 
-	if (!(_digp->saved & PGPDIG_SIG_HAS_CREATION_TIME))
+	if (!(_digp->saved & PGPDIG_SAVED_TIME))
 	    return 1; /* RFC 4880 §5.2.3.4 creation time MUST be present */
 
 	if (p > hend || hend - p < 2)
@@ -906,9 +904,9 @@ static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams 
 		uint8_t newsaved = sigdigp->saved & ~digp->saved;
 		if (pgpVerifySelf(digp, sigdigp, all, i))
 		    break;		/* verification failed */
-		if ((newsaved & PGPDIG_SIG_HAS_KEY_FLAGS) == 0) {
+		if ((newsaved & PGPDIG_SAVED_KEY_FLAGS) == 0) {
 		    digp->key_flags = sigdigp->key_flags;
-		    digp->saved |= PGPDIG_SIG_HAS_KEY_FLAGS;
+		    digp->saved |= PGPDIG_SAVED_KEY_FLAGS;
 		}
 		if ((newsaved & PGPDIG_SAVED_TIME) == 0) {
 		    digp->time = sigdigp->time;
@@ -1038,13 +1036,13 @@ int pgpPrtParamsSubkeys(const uint8_t *pkts, size_t pktlen,
 
 	    /* Is the subkey revoked or incapable of signing? */
 	    int ignore = subkey_sig->sigtype != PGPSIGTYPE_SUBKEY_BINDING ||
-			 !((subkey_sig->saved & PGPDIG_SIG_HAS_KEY_FLAGS) &&
+			 !((subkey_sig->saved & PGPDIG_SAVED_KEY_FLAGS) &&
 			   (subkey_sig->key_flags & 0x02));
 	    if (ignore) {
 		pgpDigParamsFree(digps[count]);
 	    } else {
 		digps[count]->key_flags = subkey_sig->key_flags;
-		digps[count]->saved |= PGPDIG_SIG_HAS_KEY_FLAGS;
+		digps[count]->saved |= PGPDIG_SAVED_KEY_FLAGS;
 		count++;
 	    }
 	    p += (pkt.body - pkt.head) + pkt.blen;
