@@ -9,7 +9,6 @@
 #include <netinet/in.h>
 #include <rpm/rpmstring.h>
 #include <rpm/rpmlog.h>
-#include <rpm/rpmbase64.h>
 
 #include "rpmpgpval.h"
 #include "rpmpgp_internal.h"
@@ -356,9 +355,8 @@ static int pgpPrtSig(pgpTag tag, const uint8_t *h, size_t hlen,
     size_t plen;
     int rc = 1;
 
-    /* Reset the saved flags */
-    _digp->saved &= PGPDIG_SAVED_TIME | PGPDIG_SAVED_ID;
-    _digp->key_flags = 0;
+    if (_digp->version || _digp->saved)
+	return rc;	/* need empty pgpDigParams */
 
     if (pgpVersion(h, hlen, &version))
 	return rc;
@@ -369,21 +367,16 @@ static int pgpPrtSig(pgpTag tag, const uint8_t *h, size_t hlen,
 
 	if (hlen <= sizeof(*v) || v->hashlen != 5)
 	    return 1;
-	if (_digp->pubkey_algo == 0) {
-	    _digp->version = v->version;
-	    _digp->hashlen = v->hashlen;
-	    _digp->sigtype = v->sigtype;
-	    _digp->hash = memcpy(xmalloc(v->hashlen), &v->sigtype, v->hashlen);
-	    if (!(_digp->saved & PGPDIG_SAVED_TIME))
-		_digp->time = pgpGrab4(v->time);
-	    if (!(_digp->saved & PGPDIG_SAVED_ID))
-		memcpy(_digp->signid, v->signid, sizeof(_digp->signid));
-	    _digp->saved = PGPDIG_SAVED_TIME | PGPDIG_SIG_HAS_CREATION_TIME | PGPDIG_SAVED_ID;
-	    _digp->pubkey_algo = v->pubkey_algo;
-	    _digp->hash_algo = v->hash_algo;
-	    memcpy(_digp->signhash16, v->signhash16, sizeof(_digp->signhash16));
-	}
-
+	_digp->version = v->version;
+	_digp->hashlen = v->hashlen;
+	_digp->sigtype = v->sigtype;
+	_digp->hash = memcpy(xmalloc(v->hashlen), &v->sigtype, v->hashlen);
+	_digp->time = pgpGrab4(v->time);
+	memcpy(_digp->signid, v->signid, sizeof(_digp->signid));
+	_digp->saved = PGPDIG_SAVED_TIME | PGPDIG_SIG_HAS_CREATION_TIME | PGPDIG_SAVED_ID;
+	_digp->pubkey_algo = v->pubkey_algo;
+	_digp->hash_algo = v->hash_algo;
+	memcpy(_digp->signhash16, v->signhash16, sizeof(_digp->signhash16));
 	p = ((uint8_t *)v) + sizeof(*v);
 	rc = tag ? pgpPrtSigParams(tag, v->pubkey_algo, p, h, hlen, _digp) : 0;
     }	break;
@@ -502,6 +495,9 @@ static int pgpPrtKey(pgpTag tag, const uint8_t *h, size_t hlen,
     const uint8_t * p = NULL;
     int rc = 1;
 
+    if (_digp->version || _digp->saved)
+	return rc;	/* need empty pgpDigParams */
+
     if (pgpVersion(h, hlen, &version))
 	return rc;
 
@@ -511,15 +507,9 @@ static int pgpPrtKey(pgpTag tag, const uint8_t *h, size_t hlen,
     {   pgpPktKeyV4 v = (pgpPktKeyV4)h;
 
 	if (hlen > sizeof(*v)) {
-
-	    /* If _digp->hash is not NULL then signature is already loaded */
-	    if (_digp->hash == NULL) {
-		_digp->version = v->version;
-		if (!(_digp->saved & PGPDIG_SAVED_TIME))
-		    _digp->time = pgpGrab4(v->time);
-		_digp->saved |= PGPDIG_SAVED_TIME | PGPDIG_SIG_HAS_CREATION_TIME;
-	    }
-
+	    _digp->version = v->version;
+	    _digp->time = pgpGrab4(v->time);
+	    _digp->saved |= PGPDIG_SAVED_TIME;
 	    p = ((uint8_t *)v) + sizeof(*v);
 	    rc = pgpPrtPubkeyParams(v->pubkey_algo, p, h, hlen, _digp);
 	}
