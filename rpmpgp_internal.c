@@ -247,8 +247,7 @@ static int pgpPrtSubType(const uint8_t *h, size_t hlen, pgpSigType sigtype,
 	    if (_digp->saved & PGPDIG_SAVED_TIME)
 		return 1; /* duplicate timestamps not allowed */
 	    impl = *p;
-	    if (!(_digp->saved & PGPDIG_SAVED_TIME))
-		_digp->time = pgpGrab4(p + 1);
+	    _digp->time = pgpGrab4(p + 1);
 	    _digp->saved |= PGPDIG_SAVED_TIME;
 	    break;
 
@@ -257,8 +256,8 @@ static int pgpPrtSubType(const uint8_t *h, size_t hlen, pgpSigType sigtype,
 		break; /* other lengths not understood */
 	    impl = *p;
 	    if (!(_digp->saved & PGPDIG_SAVED_ID)) {
-		_digp->saved |= PGPDIG_SAVED_ID;
 		memcpy(_digp->signid, p+1, sizeof(_digp->signid));
+		_digp->saved |= PGPDIG_SAVED_ID;
 	    }
 	    break;
 
@@ -268,8 +267,8 @@ static int pgpPrtSubType(const uint8_t *h, size_t hlen, pgpSigType sigtype,
 	    if (_digp->saved & PGPDIG_SAVED_KEY_FLAGS)
 		return 1;	/* Reject duplicate key usage flags */
 	    impl = *p;
-	    _digp->saved |= PGPDIG_SAVED_KEY_FLAGS;
 	    _digp->key_flags = plen >= 2 ? p[1] : 0;
+	    _digp->saved |= PGPDIG_SAVED_KEY_FLAGS;
 	    break;
 
 	case PGPSUBTYPE_EMBEDDED_SIG:
@@ -385,6 +384,10 @@ static int pgpPrtSig(pgpTag tag, const uint8_t *h, size_t hlen,
 
 	if (hlen <= sizeof(*v))
 	    return 1;
+	_digp->version = v->version;
+	_digp->sigtype = v->sigtype;
+	_digp->pubkey_algo = v->pubkey_algo;
+	_digp->hash_algo = v->hash_algo;
 
 	/* parse both the hashed and unhashed subpackets */
 	p = &v->hashlen[0];
@@ -395,7 +398,7 @@ static int pgpPrtSig(pgpTag tag, const uint8_t *h, size_t hlen,
 	    p += 2;
 	    if (hend - p < plen)
 		return 1;
-	    if (hashed &&_digp->pubkey_algo == 0) {
+	    if (hashed) {
 		_digp->hashlen = sizeof(*v) + plen;
 		_digp->hash = memcpy(xmalloc(_digp->hashlen), v, _digp->hashlen);
 	    }
@@ -409,13 +412,7 @@ static int pgpPrtSig(pgpTag tag, const uint8_t *h, size_t hlen,
 
 	if (p > hend || hend - p < 2)
 	    return 1;
-	if (_digp->pubkey_algo == 0) {
-	    _digp->version = v->version;
-	    _digp->sigtype = v->sigtype;
-	    _digp->pubkey_algo = v->pubkey_algo;
-	    _digp->hash_algo = v->hash_algo;
-	    memcpy(_digp->signhash16, p, sizeof(_digp->signhash16));
-	}
+	memcpy(_digp->signhash16, p, sizeof(_digp->signhash16));
 	p += 2;
 
 	if (p > hend)
