@@ -226,16 +226,6 @@ static int pgpVersion(const uint8_t *h, size_t hlen, uint8_t *version)
     return 0;
 }
 
-int pgpSignatureType(pgpDigParams _digp)
-{
-    int rc = -1;
-
-    if (_digp && _digp->tag == PGPTAG_SIGNATURE)
-	rc = _digp->sigtype;
-
-    return rc;
-}
-
 static int pgpPrtSubType(const uint8_t *h, size_t hlen, pgpSigType sigtype,
 			 pgpDigParams _digp, int hashed)
 {
@@ -311,7 +301,7 @@ static int pgpPrtSubType(const uint8_t *h, size_t hlen, pgpSigType sigtype,
     return rc;
 }
 
-pgpDigAlg pgpDigAlgFree(pgpDigAlg alg)
+static pgpDigAlg pgpDigAlgFree(pgpDigAlg alg)
 {
     if (alg) {
 	if (alg->free)
@@ -345,7 +335,7 @@ static int pgpPrtSigParams(pgpTag tag, uint8_t pubkey_algo,
 		pgpDigParams sigp)
 {
     const uint8_t * pend = h + hlen;
-    pgpDigAlg sigalg = pgpSignatureNew(pubkey_algo);
+    pgpDigAlg sigalg = pgpDigAlgNewSignature(pubkey_algo);
 
     int rc = processMpis(sigalg->mpis, sigalg, p, pend);
 
@@ -494,7 +484,7 @@ static int pgpPrtPubkeyParams(uint8_t pubkey_algo,
 	curve = pgpCurveByOid(p + 1, len);
 	p += len + 1;
     }
-    pgpDigAlg keyalg = pgpPubkeyNew(pubkey_algo, curve);
+    pgpDigAlg keyalg = pgpDigAlgNewPubkey(pubkey_algo, curve);
     rc = processMpis(keyalg->mpis, keyalg, p, pend);
     if (rc == 0) {
 	keyp->pubkey_algo = pubkey_algo;
@@ -698,6 +688,16 @@ int pgpDigParamsCmp(pgpDigParams p1, pgpDigParams p2)
 	rc = 0;
     }
 exit:
+    return rc;
+}
+
+int pgpSignatureType(pgpDigParams _digp)
+{
+    int rc = -1;
+
+    if (_digp && _digp->tag == PGPTAG_SIGNATURE)
+	rc = _digp->sigtype;
+
     return rc;
 }
 

@@ -19,11 +19,9 @@ struct pgpDigAlg_s {
     void *data;			/*!< algorithm specific private data */
 };
 
-pgpDigAlg pgpPubkeyNew(int algo, int curve);
+pgpDigAlg pgpDigAlgNewPubkey(int algo, int curve);
 
-pgpDigAlg pgpSignatureNew(int algo);
-
-pgpDigAlg pgpDigAlgFree(pgpDigAlg alg);
+pgpDigAlg pgpDigAlgNewSignature(int algo);
 
 /** \ingroup rpmpgp
  * Return no. of bits in a multiprecision integer.
