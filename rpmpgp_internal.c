@@ -765,7 +765,7 @@ static int hashUserID(DIGEST_CTX hash, const struct pgpPkt *pkt)
 }
 
 static int pgpVerifySelf(pgpDigParams key, pgpDigParams selfsig,
-			const struct pgpPkt *all, int i)
+			const struct pgpPkt *pubkey, const struct pgpPkt *other)
 {
     int rc = -1;
     DIGEST_CTX hash = NULL;
@@ -774,12 +774,12 @@ static int pgpVerifySelf(pgpDigParams key, pgpDigParams selfsig,
     case PGPSIGTYPE_SUBKEY_BINDING:
     case PGPSIGTYPE_SUBKEY_REVOKE:
 	hash = rpmDigestInit(selfsig->hash_algo, 0);
-	if (hash && i > 1 && all[i - 1].tag == PGPTAG_PUBLIC_SUBKEY) {
+	if (hash && other && other->tag == PGPTAG_PUBLIC_SUBKEY) {
 	    rc = 0;
 	    if (selfsig->sigtype == PGPSIGTYPE_SUBKEY_BINDING)
-		rc = hashKey(hash, &all[0], PGPTAG_PUBLIC_KEY);
+		rc = hashKey(hash, pubkey, PGPTAG_PUBLIC_KEY);
 	    if (!rc)
-		rc = hashKey(hash, &all[i - 1], PGPTAG_PUBLIC_SUBKEY);
+		rc = hashKey(hash, other, PGPTAG_PUBLIC_SUBKEY);
 	}
 	break;
     case PGPSIGTYPE_GENERIC_CERT:
@@ -787,21 +787,16 @@ static int pgpVerifySelf(pgpDigParams key, pgpDigParams selfsig,
     case PGPSIGTYPE_CASUAL_CERT:
     case PGPSIGTYPE_POSITIVE_CERT:
 	hash = rpmDigestInit(selfsig->hash_algo, 0);
-	if (hash && i > 1) {
-	    /* find PGPTAG_USER_ID packet that is certified */
-	    while (--i > 0 && all[i].tag != PGPTAG_USER_ID)
-		;
-	    if (i) {
-		rc = hashKey(hash, &all[0], PGPTAG_PUBLIC_KEY);
-		if (!rc)
-		    rc = hashUserID(hash, &all[i]);
-	    }
+	if (hash && other && other->tag == PGPTAG_USER_ID) {
+	    rc = hashKey(hash, pubkey, PGPTAG_PUBLIC_KEY);
+	    if (!rc)
+		rc = hashUserID(hash, other);
 	}
 	break;
     case PGPSIGTYPE_SIGNED_KEY:
 	hash = rpmDigestInit(selfsig->hash_algo, 0);
-	if (hash && i > 0) 
-	    rc = hashKey(hash, &all[0], PGPTAG_PUBLIC_KEY);
+	if (hash) 
+	    rc = hashKey(hash, pubkey, PGPTAG_PUBLIC_KEY);
 	break;
     default:
 	/* ignore types we can't handle */
@@ -858,7 +853,7 @@ static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams 
     const uint8_t *pend = pkts + pktlen;
     pgpDigParams digp = NULL;
     pgpDigParams sigdigp = NULL;
-    int i = 0, useridpkt = 0;
+    int i = 0, useridpkt = 0, subkeypkt = 0;
     int alloced = 16; /* plenty for normal cases */
     int rc = -1; /* assume failure */
     int prevtag = 0;
@@ -888,18 +883,18 @@ static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams 
 	    sigdigp = pgpDigParamsNew(pkt->tag);
 	    if (pgpPrtPkt(pkt, sigdigp))
 		break;
-	    if (prevtag == PGPTAG_PUBLIC_SUBKEY && sigdigp->sigtype != PGPSIGTYPE_SUBKEY_BINDING)
+	    if (prevtag == PGPTAG_PUBLIC_SUBKEY && sigdigp->sigtype != PGPSIGTYPE_SUBKEY_BINDING && sigdigp->sigtype != PGPSIGTYPE_SUBKEY_REVOKE)
 		break;			/* a subkey paket must be followed by a binding signature */
-	    if (sigdigp->sigtype == PGPSIGTYPE_SUBKEY_BINDING) {
+	    if (sigdigp->sigtype == PGPSIGTYPE_SUBKEY_BINDING || sigdigp->sigtype == PGPSIGTYPE_SUBKEY_REVOKE) {
 		if (!is_self_signature(digp, sigdigp))
 		    break;		/* the binding signature must be a self signature */
-		if (pgpVerifySelf(digp, sigdigp, all, i))
+		if (pgpVerifySelf(digp, sigdigp, all, subkeypkt ? all + subkeypkt : NULL))
 		    break;		/* verification failed */
 	    }
 	    /* copy pubkey related data from the self sig */
 	    if ((sigdigp->sigtype == PGPSIGTYPE_POSITIVE_CERT || sigdigp->sigtype == PGPSIGTYPE_SIGNED_KEY) && is_self_signature(digp, sigdigp))  {
 		uint8_t newsaved = sigdigp->saved & ~digp->saved;
-		if (pgpVerifySelf(digp, sigdigp, all, i))
+		if (pgpVerifySelf(digp, sigdigp, all, useridpkt ? all + useridpkt : NULL))
 		    break;		/* verification failed */
 		if ((newsaved & PGPDIG_SAVED_KEY_FLAGS) == 0) {
 		    digp->key_flags = sigdigp->key_flags;
@@ -918,6 +913,10 @@ static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams 
 	} else if (pkt->tag == PGPTAG_USER_ID) {
 	    /* we delay the user id package parsing until we have verified the binding signature */
 	    useridpkt = i;
+	    subkeypkt = 0;
+	} else if (pkt->tag == PGPTAG_PUBLIC_SUBKEY) {
+	    subkeypkt = i;
+	    useridpkt = 0;
 	} else {
 	    if (pgpPrtPkt(pkt, digp))
 		break;
