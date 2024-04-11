@@ -51,7 +51,7 @@ struct pgpDigParams_s {
     uint8_t key_flags;		/*!< key usage flags */
 
     uint8_t version;		/*!< key/signature version number. */
-    uint32_t time;		/*!< key/signature modification/creation time. */
+    uint32_t time;		/*!< key/signature creation time. */
     uint8_t pubkey_algo;	/*!< key/signature public key algorithm. */
 
     uint8_t hash_algo;		/*!< signature hash algorithm */
@@ -60,10 +60,15 @@ struct pgpDigParams_s {
     uint32_t hashlen;
     uint8_t signhash16[2];
     pgpKeyID_t signid;		/*!< key id of pubkey or signature */
+    uint32_t key_expire;	/*!< key expire time. */
+    int revoked;		/*!< is the key revoked? */
     uint8_t saved;		/*!< Various flags. */
 #define	PGPDIG_SAVED_TIME	(1 << 0)
 #define	PGPDIG_SAVED_ID		(1 << 1)
 #define	PGPDIG_SAVED_KEY_FLAGS	(1 << 2)
+#define	PGPDIG_SAVED_KEY_EXPIRE	(1 << 3)
+#define	PGPDIG_SAVED_PRIMARY	(1 << 4)
+#define	PGPDIG_SAVED_VALID	(1 << 5)
 
     pgpDigAlg alg;		/*!< algorithm specific data like MPIs */
 };
@@ -239,10 +244,10 @@ static int pgpPrtSubType(const uint8_t *h, size_t hlen, pgpSigType sigtype,
 	hlen -= lenlen;
 
 	switch (*p & ~PGPSUBTYPE_CRITICAL) {
-	case PGPSUBTYPE_SIG_CREATE_TIME:  /* signature creation time */
+	case PGPSUBTYPE_SIG_CREATE_TIME:
 	    if (!hashed)
 		break; /* RFC 4880 §5.2.3.4 creation time MUST be hashed */
-	    if (plen-1 != sizeof(_digp->time))
+	    if (plen-1 != 4)
 		break; /* other lengths not understood */
 	    if (_digp->saved & PGPDIG_SAVED_TIME)
 		return 1; /* duplicate timestamps not allowed */
@@ -251,7 +256,7 @@ static int pgpPrtSubType(const uint8_t *h, size_t hlen, pgpSigType sigtype,
 	    _digp->saved |= PGPDIG_SAVED_TIME;
 	    break;
 
-	case PGPSUBTYPE_ISSUER_KEYID:	/* issuer key ID */
+	case PGPSUBTYPE_ISSUER_KEYID:
 	    if (plen-1 != sizeof(_digp->signid))
 		break; /* other lengths not understood */
 	    impl = *p;
@@ -261,7 +266,7 @@ static int pgpPrtSubType(const uint8_t *h, size_t hlen, pgpSigType sigtype,
 	    }
 	    break;
 
-	case PGPSUBTYPE_KEY_FLAGS: /* Key usage flags */
+	case PGPSUBTYPE_KEY_FLAGS:
 	    if (!hashed)
 		break;	/* Subpackets in the unhashed section cannot be trusted */
 	    if (_digp->saved & PGPDIG_SAVED_KEY_FLAGS)
@@ -271,13 +276,31 @@ static int pgpPrtSubType(const uint8_t *h, size_t hlen, pgpSigType sigtype,
 	    _digp->saved |= PGPDIG_SAVED_KEY_FLAGS;
 	    break;
 
+	case PGPSUBTYPE_KEY_EXPIRE_TIME:
+	    if (!hashed)
+		break;	/* Subpackets in the unhashed section cannot be trusted */
+	    if (plen-1 != 4)
+		break; /* other lengths not understood */
+	    if (_digp->saved & PGPDIG_SAVED_KEY_EXPIRE)
+		return 1;	/* Reject duplicate key expire time */
+	    impl = *p;
+	    _digp->key_expire = pgpGrab4(p + 1);
+	    _digp->saved |= PGPDIG_SAVED_KEY_EXPIRE;
+	    break;
+
 	case PGPSUBTYPE_EMBEDDED_SIG:
 	    /* XXX: need to verify embeded signatures of subkey binding sigs */
 	    impl = *p;
 	    break;
 
 	case PGPSUBTYPE_PRIMARY_USERID:
+	    if (!hashed)
+		break;	/* Subpackets in the unhashed section cannot be trusted */
+	    if (plen-1 != 1)
+		break; /* other lengths not understood */
 	    impl = *p;
+	    if (p[1])
+		_digp->saved |= PGPDIG_SAVED_PRIMARY;
 	    break;
 
 	default:
@@ -775,9 +798,7 @@ static int pgpVerifySelf(pgpDigParams key, pgpDigParams selfsig,
     case PGPSIGTYPE_SUBKEY_REVOKE:
 	hash = rpmDigestInit(selfsig->hash_algo, 0);
 	if (hash && other && other->tag == PGPTAG_PUBLIC_SUBKEY) {
-	    rc = 0;
-	    if (selfsig->sigtype == PGPSIGTYPE_SUBKEY_BINDING)
-		rc = hashKey(hash, pubkey, PGPTAG_PUBLIC_KEY);
+	    rc = hashKey(hash, pubkey, PGPTAG_PUBLIC_KEY);
 	    if (!rc)
 		rc = hashKey(hash, other, PGPTAG_PUBLIC_SUBKEY);
 	}
@@ -812,31 +833,6 @@ static int pgpVerifySelf(pgpDigParams key, pgpDigParams selfsig,
     return rc;
 }
 
-static int parseSubkeySig(const struct pgpPkt *pkt, uint8_t tag,
-			  pgpDigParams *params_p) {
-    pgpDigParams params = *params_p = NULL; /* assume failure */
-
-    if (pkt->tag != PGPTAG_SIGNATURE)
-	goto fail;
-
-    params = pgpDigParamsNew(tag);
-
-    if (pgpPrtSig(tag, pkt->body, pkt->blen, params))
-	goto fail;
-
-    if (params->sigtype != PGPSIGTYPE_SUBKEY_BINDING &&
-	params->sigtype != PGPSIGTYPE_SUBKEY_REVOKE)
-    {
-	goto fail;
-    }
-
-    *params_p = params;
-    return 0;
-fail:
-    pgpDigParamsFree(params);
-    return -1;
-}
-
 static const size_t RPM_MAX_OPENPGP_BYTES = 65535; /* max number of bytes in a key */
 
 static int
@@ -853,67 +849,139 @@ static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams 
     const uint8_t *pend = pkts + pktlen;
     pgpDigParams digp = NULL;
     pgpDigParams sigdigp = NULL;
+    pgpDigParams newest_digp = NULL;
     int i = 0, useridpkt = 0, subkeypkt = 0;
     int alloced = 16; /* plenty for normal cases */
     int rc = -1; /* assume failure */
     int prevtag = 0;
+    uint32_t key_expire_sig_time = 0;
+    uint32_t key_flags_sig_time = 0;
 
     if (pktlen > RPM_MAX_OPENPGP_BYTES)
 	return rc; /* reject absurdly large data */
 
     struct pgpPkt *all = xmalloc(alloced * sizeof(*all));
-    while (p < pend) {
+    while (1) {
 	struct pgpPkt *pkt = &all[i];
-	if (decodePkt(p, (pend - p), pkt))
-	    break;
-	if (digp && pkt->tag == PGPTAG_PUBLIC_KEY)
-	    break;	/* start of another public key, error out */
-
-	if (!digp) {
-	    if (pkt->tag != PGPTAG_PUBLIC_KEY)
+	if (p < pend) {
+	    if (decodePkt(p, (pend - p), pkt))
 		break;
-	    digp = pgpDigParamsNew(pkt->tag);
+	    if (digp && pkt->tag == PGPTAG_PUBLIC_KEY)
+		break;	/* start of another public key, error out */
+
+	    if (!digp) {
+		if (pkt->tag != PGPTAG_PUBLIC_KEY)
+		    break;
+		digp = pgpDigParamsNew(pkt->tag);
+	    }
+	} else {
+	    pkt->tag = 0;
 	}
 
-	/* subkeys must be followed by binding signature which we need to verify */
+	/* did we end a section selfsig/userid/subkey section? if yes take the data from the newest signature */
+	if ((p == pend || pkt->tag == PGPTAG_USER_ID || pkt->tag == PGPTAG_PHOTOID || pkt->tag == PGPTAG_PUBLIC_SUBKEY) && newest_digp) {
+	    if (newest_digp->sigtype == PGPSIGTYPE_CERT_REVOKE)
+		newest_digp->saved &= ~(PGPDIG_SAVED_KEY_EXPIRE | PGPDIG_SAVED_KEY_FLAGS);	/* just in case */
+	    else if (!subkeypkt)
+		digp->saved |= PGPDIG_SAVED_VALID;		/* we have at least one self-sig */
+	    /* commit the data from the newest signature */
+	    if (!subkeypkt && (newest_digp->saved & PGPDIG_SAVED_KEY_EXPIRE)) {
+		if ((!key_expire_sig_time || newest_digp->time > key_expire_sig_time)) {
+		    digp->key_expire = newest_digp->key_expire;
+		    key_expire_sig_time = newest_digp->time;
+		    digp->saved |= PGPDIG_SAVED_KEY_EXPIRE;
+		    if (!useridpkt)
+			key_expire_sig_time = 0xffffffffU;	/* expires from the direct signatures are final */
+		}
+	    }
+	    if (!subkeypkt && (newest_digp->saved & PGPDIG_SAVED_KEY_FLAGS)) {
+		if ((!key_flags_sig_time || newest_digp->time > key_flags_sig_time)) {
+		    digp->key_flags = newest_digp->key_flags;
+		    key_flags_sig_time = newest_digp->time;
+		    digp->saved |= PGPDIG_SAVED_KEY_FLAGS;
+		    if (!useridpkt)
+			key_flags_sig_time = 0xffffffffU;	/* key flags from the direct signatures are final */
+		}
+	    }
+	    if (useridpkt && newest_digp->sigtype != PGPSIGTYPE_CERT_REVOKE) {
+		if (!digp->userid || ((newest_digp->saved & PGPDIG_SAVED_PRIMARY) != 0 && (digp->saved & PGPDIG_SAVED_PRIMARY) == 0)) {
+		    if (pgpPrtPkt(all + useridpkt, digp))
+			break;
+		    if ((newest_digp->saved & PGPDIG_SAVED_PRIMARY) != 0)
+			digp->saved |= PGPDIG_SAVED_PRIMARY;
+		}
+	    }
+	    newest_digp = pgpDigParamsFree(newest_digp);
+	}
+
+	if (p == pend)
+	    break;	/* all packets processed */
+
+	/* subkeys must be followed by at least one binding signature which we need to verify */
 	if (prevtag == PGPTAG_PUBLIC_SUBKEY && pkt->tag != PGPTAG_SIGNATURE)
 	    break;
 
 	if (pkt->tag == PGPTAG_SIGNATURE) {
+	    int needsig = 0;
 	    sigdigp = pgpDigParamsNew(pkt->tag);
 	    if (pgpPrtPkt(pkt, sigdigp))
 		break;
+
 	    if (prevtag == PGPTAG_PUBLIC_SUBKEY && sigdigp->sigtype != PGPSIGTYPE_SUBKEY_BINDING && sigdigp->sigtype != PGPSIGTYPE_SUBKEY_REVOKE)
 		break;			/* a subkey paket must be followed by a binding signature */
+
 	    if (sigdigp->sigtype == PGPSIGTYPE_SUBKEY_BINDING || sigdigp->sigtype == PGPSIGTYPE_SUBKEY_REVOKE) {
+		if (!subkeypkt)
+		    break;		/* signature in wrong section */
 		if (!is_self_signature(digp, sigdigp))
 		    break;		/* the binding signature must be a self signature */
-		if (pgpVerifySelf(digp, sigdigp, all, subkeypkt ? all + subkeypkt : NULL))
+		if (pgpVerifySelf(digp, sigdigp, all, all + subkeypkt))
 		    break;		/* verification failed */
+		needsig = 1;
 	    }
-	    /* copy pubkey related data from the self sig */
-	    if ((sigdigp->sigtype == PGPSIGTYPE_POSITIVE_CERT || sigdigp->sigtype == PGPSIGTYPE_SIGNED_KEY) && is_self_signature(digp, sigdigp))  {
-		uint8_t newsaved = sigdigp->saved & ~digp->saved;
-		if (pgpVerifySelf(digp, sigdigp, all, useridpkt ? all + useridpkt : NULL))
+
+	    if (sigdigp->sigtype == PGPSIGTYPE_KEY_REVOKE) {
+		/* sections don't matter here */
+		if (!is_self_signature(digp, sigdigp))
+		    break;		/* the binding signature must be a self signature */
+		if (pgpVerifySelf(digp, sigdigp, all, NULL))
 		    break;		/* verification failed */
-		if ((newsaved & PGPDIG_SAVED_KEY_FLAGS) == 0) {
-		    digp->key_flags = sigdigp->key_flags;
-		    digp->saved |= PGPDIG_SAVED_KEY_FLAGS;
+		digp->revoked = 1;				/* this is final */
+		digp->saved |= PGPDIG_SAVED_VALID;		/* we have at least one correct self-sig */
+	    }
+
+	    if (sigdigp->sigtype == PGPSIGTYPE_SIGNED_KEY) {
+		if (subkeypkt || useridpkt)
+		    break;		/* signature in wrong section */
+		if (is_self_signature(digp, sigdigp)) {
+		    if (pgpVerifySelf(digp, sigdigp, all, NULL))
+			break;		/* verification failed */
+		    needsig = 1;
 		}
-		if ((newsaved & PGPDIG_SAVED_TIME) == 0) {
-		    digp->time = sigdigp->time;
-		    digp->saved |= PGPDIG_SAVED_TIME;
+	    }
+
+	    if (sigdigp->sigtype == PGPSIGTYPE_GENERIC_CERT || sigdigp->sigtype == PGPSIGTYPE_PERSONA_CERT || sigdigp->sigtype == PGPSIGTYPE_CASUAL_CERT || sigdigp->sigtype == PGPSIGTYPE_POSITIVE_CERT || sigdigp->sigtype == PGPSIGTYPE_CERT_REVOKE) {
+		if (!useridpkt)
+		    break;		/* signature in wrong section */
+		if (all[useridpkt].tag == PGPTAG_USER_ID && is_self_signature(digp, sigdigp)) {
+		    if (pgpVerifySelf(digp, sigdigp, all, all + useridpkt))
+			break;		/* verification failed */
+		    needsig = 1;
+		    /* note that cert revokations may get overwritten by newer certifications (like in gnupg) */
 		}
-		if (sigdigp->sigtype == PGPSIGTYPE_POSITIVE_CERT && useridpkt && !digp->userid) {
-		    if (pgpPrtPkt(all + useridpkt, digp))
-			break;
-		}
+	    }
+
+	    if (needsig && (!newest_digp || sigdigp->time >= newest_digp->time)) {
+		newest_digp = pgpDigParamsFree(newest_digp);
+		newest_digp = sigdigp;
+		sigdigp = NULL;
 	    }
 	    sigdigp = pgpDigParamsFree(sigdigp);
-	} else if (pkt->tag == PGPTAG_USER_ID) {
+	} else if (pkt->tag == PGPTAG_USER_ID || pkt->tag == PGPTAG_PHOTOID) {
 	    /* we delay the user id package parsing until we have verified the binding signature */
+	    if (subkeypkt)
+		break;		/* no user id packets after subkeys allowed */
 	    useridpkt = i;
-	    subkeypkt = 0;
 	} else if (pkt->tag == PGPTAG_PUBLIC_SUBKEY) {
 	    subkeypkt = i;
 	    useridpkt = 0;
@@ -930,11 +998,11 @@ static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams 
 	    all = xrealloc(all, alloced * sizeof(*all));
 	}
     }
-
     rc = (digp && (p == pend) && prevtag != PGPTAG_PUBLIC_SUBKEY) ? 0 : -1;
 
     free(all);
     sigdigp = pgpDigParamsFree(sigdigp);
+    newest_digp = pgpDigParamsFree(newest_digp);
     if (ret && rc == 0) {
 	*ret = digp;
     } else {
@@ -993,61 +1061,94 @@ int pgpPrtParamsSubkeys(const uint8_t *pkts, size_t pktlen,
 {
     const uint8_t *p = pkts;
     const uint8_t *pend = pkts + pktlen;
-    pgpDigParams *digps = NULL;
+    pgpDigParams *digps = NULL, subdigp = NULL;
+    pgpDigParams sigdigp = NULL;
+    pgpDigParams newest_digp = NULL;
     int count = 0;
     int alloced = 10;
     struct pgpPkt pkt;
-    int rc, i;
+    int rc, i, j;
 
     digps = xmalloc(alloced * sizeof(*digps));
 
-    while (p < pend) {
-	if (decodePkt(p, (pend - p), &pkt))
-	    break;
+    while (1) {
+	if (p < pend) {
+	    if (decodePkt(p, (pend - p), &pkt))
+		break;
+	} else {
+	    pkt.tag = 0;
+	}
 
+	/* finish up this subkey if we are at the end or a new one comes next */
+	if (p == pend || pkt.tag == PGPTAG_PUBLIC_SUBKEY) {
+	    if (newest_digp && subdigp) {
+		/* copy over the stuff we need from the newest signature */
+		subdigp->saved |= PGPDIG_SAVED_VALID;	/* at least one binding sig */
+		if ((newest_digp->saved & PGPDIG_SAVED_KEY_FLAGS) != 0) {
+		    subdigp->key_flags = newest_digp->key_flags;
+		    subdigp->saved |= PGPDIG_SAVED_KEY_FLAGS;
+		}
+		if ((newest_digp->saved & PGPDIG_SAVED_KEY_EXPIRE) != 0) {
+		    subdigp->key_expire = newest_digp->key_expire;
+		    subdigp->saved |= PGPDIG_SAVED_KEY_EXPIRE;
+		}
+	    }
+	    newest_digp = pgpDigParamsFree(newest_digp);
+	}
+
+	if (p == pend)
+	    break;
 	p += (pkt.body - pkt.head) + pkt.blen;
 
 	if (pkt.tag == PGPTAG_PUBLIC_SUBKEY) {
-	    if (count == alloced) {
-		alloced <<= 1;
-		digps = xrealloc(digps, alloced * sizeof(*digps));
-	    }
-
-	    digps[count] = pgpDigParamsNew(PGPTAG_PUBLIC_SUBKEY);
+	    subdigp = pgpDigParamsNew(PGPTAG_PUBLIC_SUBKEY);
 	    /* Copy UID from main key to subkey */
-	    digps[count]->userid = mainkey->userid ? xstrdup(mainkey->userid) : NULL;
-
-	    if (pgpPrtKey(pkt.tag, pkt.body, pkt.blen, digps[count])) {
-		pgpDigParamsFree(digps[count]);
-		continue;
-	    }
-
-	    pgpDigParams subkey_sig = NULL;
-	    if (decodePkt(p, pend - p, &pkt) ||
-	        parseSubkeySig(&pkt, 0, &subkey_sig))
-	    {
-		pgpDigParamsFree(digps[count]);
-		break;
-	    }
-
-	    /* Is the subkey revoked or incapable of signing? */
-	    int ignore = subkey_sig->sigtype != PGPSIGTYPE_SUBKEY_BINDING ||
-			 !((subkey_sig->saved & PGPDIG_SAVED_KEY_FLAGS) &&
-			   (subkey_sig->key_flags & 0x02));
-	    if (ignore) {
-		pgpDigParamsFree(digps[count]);
+	    subdigp->userid = mainkey->userid ? xstrdup(mainkey->userid) : NULL;
+	    if (pgpPrtKey(pkt.tag, pkt.body, pkt.blen, subdigp)) {
+		subdigp = pgpDigParamsFree(subdigp);
 	    } else {
-		digps[count]->key_flags = subkey_sig->key_flags;
-		digps[count]->saved |= PGPDIG_SAVED_KEY_FLAGS;
-		count++;
+		if (count == alloced) {
+		    alloced <<= 1;
+		    digps = xrealloc(digps, alloced * sizeof(*digps));
+		}
+		digps[count++] = subdigp;
 	    }
-	    p += (pkt.body - pkt.head) + pkt.blen;
-	    pgpDigParamsFree(subkey_sig);
+	} else if (pkt.tag == PGPTAG_SIGNATURE && subdigp != NULL) {
+	    sigdigp = pgpDigParamsNew(pkt.tag);
+	    /* HACK: we use tag 0 to prevent MPI saving as we do not verify */
+	    if (pgpPrtSig(0, pkt.body, pkt.blen, sigdigp)) {
+		sigdigp = pgpDigParamsFree(sigdigp);
+	    }
+	    if (sigdigp && sigdigp->sigtype == PGPSIGTYPE_SUBKEY_REVOKE) {
+		subdigp->revoked = 1;
+	    } else if (sigdigp && sigdigp->sigtype == PGPSIGTYPE_SUBKEY_BINDING) {
+		if (!newest_digp || sigdigp->time >= newest_digp->time) {
+		    newest_digp = pgpDigParamsFree(newest_digp);
+		    newest_digp = sigdigp;
+		    sigdigp = NULL;
+		}
+	    }
+	    sigdigp = pgpDigParamsFree(sigdigp);
 	}
     }
     rc = (p == pend) ? 0 : -1;
 
+    sigdigp = pgpDigParamsFree(sigdigp);
+    newest_digp = pgpDigParamsFree(newest_digp);
+
     if (rc == 0) {
+	/* now strip all not-valid, revoked, or unusable subkeys */
+	for (i = j = 0; i < count; i++) {
+	    if (!digps[i]->revoked &&
+		    (digps[i]->saved & PGPDIG_SAVED_VALID) != 0 &&
+		    (digps[i]->saved & PGPDIG_SAVED_KEY_FLAGS) != 0 &&
+		    (digps[i]->key_flags & 0x02) != 0) {
+		digps[j++] = digps[i];
+	    } else {
+	        pgpDigParamsFree(digps[i]);
+	    }
+	}
+	count = j;
 	*subkeys = xrealloc(digps, count * sizeof(*digps));
 	*subkeysCount = count;
     } else {
