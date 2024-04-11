@@ -70,6 +70,7 @@ struct pgpDigParams_s {
 #define	PGPDIG_SAVED_PRIMARY	(1 << 4)
 #define	PGPDIG_SAVED_VALID	(1 << 5)
 
+    size_t mpi_offset;		/* start of mpi data */
     pgpDigAlg alg;		/*!< algorithm specific data like MPIs */
 };
 
@@ -330,7 +331,7 @@ static pgpDigAlg pgpDigAlgFree(pgpDigAlg alg)
     return NULL;
 }
 
-static int processMpis(const int mpis, pgpDigAlg sigalg,
+static int processMpis(const int mpis, pgpDigAlg alg,
 		       const uint8_t *p, const uint8_t *const pend)
 {
     int i = 0, rc = 1; /* assume failure */
@@ -338,7 +339,7 @@ static int processMpis(const int mpis, pgpDigAlg sigalg,
 	unsigned int mpil = pgpMpiLen(p);
 	if (pend - p < mpil)
 	    return rc;
-	if (sigalg && sigalg->setmpi(sigalg, i, p))
+	if (alg && alg->setmpi(alg, i, p))
 	    return rc;
 	p += mpil;
     }
@@ -349,25 +350,23 @@ static int processMpis(const int mpis, pgpDigAlg sigalg,
     return rc;
 }
 
-static int pgpPrtSigParams(pgpTag tag, uint8_t pubkey_algo,
-		const uint8_t *p, const uint8_t *h, size_t hlen,
+static int pgpPrtSigParams(pgpTag tag, const uint8_t *h, size_t hlen,
 		pgpDigParams sigp)
 {
-    const uint8_t * pend = h + hlen;
-    pgpDigAlg sigalg = pgpDigAlgNewSignature(pubkey_algo);
-
-    int rc = processMpis(sigalg->mpis, sigalg, p, pend);
+    int rc = 1; /* assume failure */
+    pgpDigAlg alg = pgpDigAlgNewSignature(sigp->pubkey_algo);
 
     /* We can't handle more than one sig at a time */
-    if (rc == 0 && sigp->alg == NULL && sigp->tag == PGPTAG_SIGNATURE)
-	sigp->alg = sigalg;
+    if (sigp->mpi_offset && sigp->mpi_offset < hlen && sigp->alg == NULL && sigp->tag == PGPTAG_SIGNATURE)
+	rc = processMpis(alg->mpis, alg, h + sigp->mpi_offset, h + hlen);
+    if (rc == 0)
+	sigp->alg = alg;
     else
-	pgpDigAlgFree(sigalg);
-
+	pgpDigAlgFree(alg);
     return rc;
 }
 
-static int pgpPrtSig(pgpTag tag, const uint8_t *h, size_t hlen,
+static int pgpPrtSigNoMPI(pgpTag tag, const uint8_t *h, size_t hlen,
 		     pgpDigParams _digp)
 {
     uint8_t version = 0;
@@ -397,8 +396,7 @@ static int pgpPrtSig(pgpTag tag, const uint8_t *h, size_t hlen,
 	_digp->pubkey_algo = v->pubkey_algo;
 	_digp->hash_algo = v->hash_algo;
 	memcpy(_digp->signhash16, v->signhash16, sizeof(_digp->signhash16));
-	p = ((uint8_t *)v) + sizeof(*v);
-	rc = tag ? pgpPrtSigParams(tag, v->pubkey_algo, p, h, hlen, _digp) : 0;
+	_digp->mpi_offset = sizeof(*v);
     }	break;
     case 4:
     {   pgpPktSigV4 v = (pgpPktSigV4)h;
@@ -440,14 +438,22 @@ static int pgpPrtSig(pgpTag tag, const uint8_t *h, size_t hlen,
 
 	if (p > hend)
 	    return 1;
-
-	rc = tag ? pgpPrtSigParams(tag, v->pubkey_algo, p, h, hlen, _digp) : 0;
+	_digp->mpi_offset = p - h;
+	rc = 0;
     }	break;
     default:
 	rpmlog(RPMLOG_WARNING, _("Unsupported version of signature: V%d\n"), version);
-	rc = 1;
 	break;
     }
+    return rc;
+}
+
+static int pgpPrtSig(pgpTag tag, const uint8_t *h, size_t hlen,
+		     pgpDigParams _digp)
+{
+    int rc = pgpPrtSig(tag, h, hlen, _digp);
+    if (!rc)
+	rc = pgpPrtSigParams(tag, h, hlen, _digp);
     return rc;
 }
 
@@ -476,29 +482,26 @@ static int isKey(pgpDigParams keyp)
     return keyp->tag == PGPTAG_PUBLIC_KEY || keyp->tag == PGPTAG_PUBLIC_SUBKEY;
 }
 
-static int pgpPrtPubkeyParams(uint8_t pubkey_algo,
-		const uint8_t *p, const uint8_t *h, size_t hlen,
+static int pgpPrtPubkeyParams(pgpTag tag, const uint8_t *h, size_t hlen,
 		pgpDigParams keyp)
 {
     int rc = 1; /* assume failure */
-    const uint8_t *pend = h + hlen;
+    const uint8_t *p;
     int curve = 0;
-    if (!isKey(keyp))
-	return rc;
     /* We can't handle more than one key at a time */
-    if (keyp->alg)
+    if (keyp->alg || !keyp->mpi_offset || keyp->mpi_offset > hlen)
 	return rc;
-    if (pubkey_algo == PGPPUBKEYALGO_EDDSA) {
+    p = h + keyp->mpi_offset;
+    if (keyp->pubkey_algo == PGPPUBKEYALGO_EDDSA) {
 	int len = (hlen > 1) ? p[0] : 0;
 	if (len == 0 || len == 0xff || len >= hlen)
 	    return rc;
 	curve = pgpCurveByOid(p + 1, len);
 	p += len + 1;
     }
-    pgpDigAlg keyalg = pgpDigAlgNewPubkey(pubkey_algo, curve);
-    rc = processMpis(keyalg->mpis, keyalg, p, pend);
+    pgpDigAlg keyalg = pgpDigAlgNewPubkey(keyp->pubkey_algo, curve);
+    rc = processMpis(keyalg->mpis, keyalg, p, h + hlen);
     if (rc == 0) {
-	keyp->pubkey_algo = pubkey_algo;
 	keyp->alg = keyalg;
     } else {
 	pgpDigAlgFree(keyalg);
@@ -510,11 +513,12 @@ static int pgpPrtKey(pgpTag tag, const uint8_t *h, size_t hlen,
 		     pgpDigParams _digp)
 {
     uint8_t version = 0;
-    const uint8_t * p = NULL;
     int rc = 1;
 
     if (_digp->version || _digp->saved)
 	return rc;	/* need empty pgpDigParams */
+    if (!isKey(_digp))
+	return rc;	/* wrong type */
 
     if (pgpVersion(h, hlen, &version))
 	return rc;
@@ -528,8 +532,9 @@ static int pgpPrtKey(pgpTag tag, const uint8_t *h, size_t hlen,
 	    _digp->version = v->version;
 	    _digp->time = pgpGrab4(v->time);
 	    _digp->saved |= PGPDIG_SAVED_TIME;
-	    p = ((uint8_t *)v) + sizeof(*v);
-	    rc = pgpPrtPubkeyParams(v->pubkey_algo, p, h, hlen, _digp);
+	    _digp->pubkey_algo = v->pubkey_algo;
+	    _digp->mpi_offset = sizeof(*v);
+	    rc = pgpPrtPubkeyParams(tag, h, hlen, _digp);
 	}
     }	break;
     default:
@@ -761,7 +766,6 @@ static int hashKey(DIGEST_CTX hash, const struct pgpPkt *pkt, int exptag)
 	    (pkt->blen >> 8),
 	    (pkt->blen     ),
 	};
-
 	rpmDigestUpdate(hash, head, 3);
 	rpmDigestUpdate(hash, pkt->body, pkt->blen);
 	rc = 0;
@@ -791,12 +795,11 @@ static int pgpVerifySelf(pgpDigParams key, pgpDigParams selfsig,
 			const struct pgpPkt *pubkey, const struct pgpPkt *other)
 {
     int rc = -1;
-    DIGEST_CTX hash = NULL;
+    DIGEST_CTX hash = rpmDigestInit(selfsig->hash_algo, 0);
 
     switch (selfsig->sigtype) {
     case PGPSIGTYPE_SUBKEY_BINDING:
     case PGPSIGTYPE_SUBKEY_REVOKE:
-	hash = rpmDigestInit(selfsig->hash_algo, 0);
 	if (hash && other && other->tag == PGPTAG_PUBLIC_SUBKEY) {
 	    rc = hashKey(hash, pubkey, PGPTAG_PUBLIC_KEY);
 	    if (!rc)
@@ -807,7 +810,7 @@ static int pgpVerifySelf(pgpDigParams key, pgpDigParams selfsig,
     case PGPSIGTYPE_PERSONA_CERT:
     case PGPSIGTYPE_CASUAL_CERT:
     case PGPSIGTYPE_POSITIVE_CERT:
-	hash = rpmDigestInit(selfsig->hash_algo, 0);
+    case PGPSIGTYPE_CERT_REVOKE:
 	if (hash && other && other->tag == PGPTAG_USER_ID) {
 	    rc = hashKey(hash, pubkey, PGPTAG_PUBLIC_KEY);
 	    if (!rc)
@@ -815,13 +818,11 @@ static int pgpVerifySelf(pgpDigParams key, pgpDigParams selfsig,
 	}
 	break;
     case PGPSIGTYPE_SIGNED_KEY:
-	hash = rpmDigestInit(selfsig->hash_algo, 0);
+    case PGPSIGTYPE_KEY_REVOKE:
 	if (hash) 
 	    rc = hashKey(hash, pubkey, PGPTAG_PUBLIC_KEY);
 	break;
     default:
-	/* ignore types we can't handle */
-	rc = 0;
 	break;
     }
 
@@ -923,17 +924,26 @@ static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams 
 
 	if (pkt->tag == PGPTAG_SIGNATURE) {
 	    int needsig = 0;
+	    int isselfsig;
 	    sigdigp = pgpDigParamsNew(pkt->tag);
-	    if (pgpPrtPkt(pkt, sigdigp))
+	    /* use the NoMPI variant because we want to ignore non self-sigs */
+	    if (pgpPrtSigNoMPI(pkt->tag, pkt->body, pkt->blen, sigdigp))
 		break;
 
 	    if (prevtag == PGPTAG_PUBLIC_SUBKEY && sigdigp->sigtype != PGPSIGTYPE_SUBKEY_BINDING && sigdigp->sigtype != PGPSIGTYPE_SUBKEY_REVOKE)
 		break;			/* a subkey paket must be followed by a binding signature */
 
+	    isselfsig = is_self_signature(digp, sigdigp);
+	    /* if this is self-signed add MPIs so we can verify */
+	    if (isselfsig) {
+	        if (pgpPrtSigParams(pkt->tag, pkt->body, pkt->blen, sigdigp))
+		    break;
+	    }
+
 	    if (sigdigp->sigtype == PGPSIGTYPE_SUBKEY_BINDING || sigdigp->sigtype == PGPSIGTYPE_SUBKEY_REVOKE) {
 		if (!subkeypkt)
 		    break;		/* signature in wrong section */
-		if (!is_self_signature(digp, sigdigp))
+		if (!isselfsig)
 		    break;		/* the binding signature must be a self signature */
 		if (pgpVerifySelf(digp, sigdigp, all, all + subkeypkt))
 		    break;		/* verification failed */
@@ -942,7 +952,7 @@ static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams 
 
 	    if (sigdigp->sigtype == PGPSIGTYPE_KEY_REVOKE) {
 		/* sections don't matter here */
-		if (!is_self_signature(digp, sigdigp))
+		if (!isselfsig)
 		    break;		/* the binding signature must be a self signature */
 		if (pgpVerifySelf(digp, sigdigp, all, NULL))
 		    break;		/* verification failed */
@@ -953,7 +963,7 @@ static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams 
 	    if (sigdigp->sigtype == PGPSIGTYPE_SIGNED_KEY) {
 		if (subkeypkt || useridpkt)
 		    break;		/* signature in wrong section */
-		if (is_self_signature(digp, sigdigp)) {
+		if (isselfsig) {
 		    if (pgpVerifySelf(digp, sigdigp, all, NULL))
 			break;		/* verification failed */
 		    needsig = 1;
@@ -963,7 +973,7 @@ static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams 
 	    if (sigdigp->sigtype == PGPSIGTYPE_GENERIC_CERT || sigdigp->sigtype == PGPSIGTYPE_PERSONA_CERT || sigdigp->sigtype == PGPSIGTYPE_CASUAL_CERT || sigdigp->sigtype == PGPSIGTYPE_POSITIVE_CERT || sigdigp->sigtype == PGPSIGTYPE_CERT_REVOKE) {
 		if (!useridpkt)
 		    break;		/* signature in wrong section */
-		if (all[useridpkt].tag == PGPTAG_USER_ID && is_self_signature(digp, sigdigp)) {
+		if (all[useridpkt].tag == PGPTAG_USER_ID && isselfsig) {
 		    if (pgpVerifySelf(digp, sigdigp, all, all + useridpkt))
 			break;		/* verification failed */
 		    needsig = 1;
@@ -1009,7 +1019,6 @@ static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams 
 	pgpDigParamsFree(digp);
     }
     return rc;
-
 }
 	
 int pgpPrtParams(const uint8_t * pkts, size_t pktlen, unsigned int pkttype,
@@ -1115,8 +1124,8 @@ int pgpPrtParamsSubkeys(const uint8_t *pkts, size_t pktlen,
 	    }
 	} else if (pkt.tag == PGPTAG_SIGNATURE && subdigp != NULL) {
 	    sigdigp = pgpDigParamsNew(pkt.tag);
-	    /* HACK: we use tag 0 to prevent MPI saving as we do not verify */
-	    if (pgpPrtSig(0, pkt.body, pkt.blen, sigdigp)) {
+	    /* we use the NoMPI variant because we do not verify */
+	    if (pgpPrtSigNoMPI(pkt.tag, pkt.body, pkt.blen, sigdigp)) {
 		sigdigp = pgpDigParamsFree(sigdigp);
 	    }
 	    if (sigdigp && sigdigp->sigtype == PGPSIGTYPE_SUBKEY_REVOKE) {
