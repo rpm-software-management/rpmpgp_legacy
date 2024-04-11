@@ -397,6 +397,7 @@ static int pgpPrtSigNoMPI(pgpTag tag, const uint8_t *h, size_t hlen,
 	_digp->hash_algo = v->hash_algo;
 	memcpy(_digp->signhash16, v->signhash16, sizeof(_digp->signhash16));
 	_digp->mpi_offset = sizeof(*v);
+	rc = 0;
     }	break;
     case 4:
     {   pgpPktSigV4 v = (pgpPktSigV4)h;
