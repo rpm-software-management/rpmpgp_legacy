@@ -451,7 +451,7 @@ static int pgpPrtSigNoMPI(pgpTag tag, const uint8_t *h, size_t hlen,
 static int pgpPrtSig(pgpTag tag, const uint8_t *h, size_t hlen,
 		     pgpDigParams _digp)
 {
-    int rc = pgpPrtSig(tag, h, hlen, _digp);
+    int rc = pgpPrtSigNoMPI(tag, h, hlen, _digp);
     if (!rc)
 	rc = pgpPrtSigParams(tag, h, hlen, _digp);
     return rc;
