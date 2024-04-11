@@ -477,11 +477,6 @@ static int pgpCurveByOid(const uint8_t *p, int l)
     return 0;
 }
 
-static int isKey(pgpDigParams keyp)
-{
-    return keyp->tag == PGPTAG_PUBLIC_KEY || keyp->tag == PGPTAG_PUBLIC_SUBKEY;
-}
-
 static int pgpPrtPubkeyParams(pgpTag tag, const uint8_t *h, size_t hlen,
 		pgpDigParams keyp)
 {
@@ -492,7 +487,7 @@ static int pgpPrtPubkeyParams(pgpTag tag, const uint8_t *h, size_t hlen,
     if (keyp->alg || !keyp->mpi_offset || keyp->mpi_offset > hlen)
 	return rc;
     p = h + keyp->mpi_offset;
-    if (keyp->pubkey_algo == PGPPUBKEYALGO_EDDSA) {
+    if (keyp->pubkey_algo == PGPPUBKEYALGO_EDDSA || keyp->pubkey_algo == PGPPUBKEYALGO_ECDSA) {
 	int len = (hlen > 1) ? p[0] : 0;
 	if (len == 0 || len == 0xff || len >= hlen)
 	    return rc;
@@ -517,7 +512,7 @@ static int pgpPrtKey(pgpTag tag, const uint8_t *h, size_t hlen,
 
     if (_digp->version || _digp->saved)
 	return rc;	/* need empty pgpDigParams */
-    if (!isKey(_digp))
+    if (_digp->tag != PGPTAG_PUBLIC_KEY && _digp->tag != PGPTAG_PUBLIC_SUBKEY)
 	return rc;	/* wrong type */
 
     if (pgpVersion(h, hlen, &version))
@@ -584,8 +579,9 @@ static int getPubkeyFingerprint(const uint8_t *h, size_t hlen,
 	    return rc;
 	se = (uint8_t *)(v + 1);
 	switch (v->pubkey_algo) {
+	case PGPPUBKEYALGO_ECDSA:
 	case PGPPUBKEYALGO_EDDSA:
-	    /* EdDSA has a curve id before the MPIs */
+	    /* ECC has a curve id before the MPIs */
 	    if (se[0] == 0x00 || se[0] == 0xff || pend - se < 1 + se[0])
 		return rc;
 	    se += 1 + se[0];
@@ -1179,7 +1175,10 @@ rpmRC pgpVerifySignature(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx)
     if (sig == NULL || ctx == NULL)
 	goto exit;
 
+    /* make sure the dig param types are correct */
     if (sig->tag != PGPTAG_SIGNATURE)
+	goto exit;
+    if (key && key->tag != PGPTAG_PUBLIC_KEY && key->tag != PGPTAG_PUBLIC_SUBKEY)
 	goto exit;
 
     if (sig->hash != NULL)
@@ -1208,8 +1207,6 @@ rpmRC pgpVerifySignature(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx)
      * done all we can, return NOKEY to indicate "looks okay but dunno."
      */
     if (key && key->alg) {
-	if (!isKey(key))
-	    goto exit;
 	pgpDigAlg sa = sig->alg;
 	pgpDigAlg ka = key->alg;
 	if (sa && sa->verify && sig->pubkey_algo == key->pubkey_algo) {
