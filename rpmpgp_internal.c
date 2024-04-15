@@ -1260,6 +1260,18 @@ rpmRC pgpVerifySignature(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx)
 	res = RPMRC_NOKEY;
     }
 
+    if (res == RPMRC_OK && key) {
+	/* check if the key is valid, not revoked, and not expired */
+	if ((key->saved & PGPDIG_SAVED_VALID) == 0 || key->revoked)
+	    res = RPMRC_NOTTRUSTED;
+	else if (key->time > sig->time)
+	    res = RPMRC_NOTTRUSTED;
+#if 0
+	else if (key->key_expire && key->key_expire < sig->time - key->time)
+	    res = RPMRC_NOTTRUSTED;
+#endif
+    }
+
 exit:
     free(hash);
     rpmDigestFinal(ctx, NULL, NULL, 0);
