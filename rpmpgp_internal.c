@@ -69,6 +69,8 @@ struct pgpDigParams_s {
 #define	PGPDIG_SAVED_KEY_EXPIRE	(1 << 3)
 #define	PGPDIG_SAVED_PRIMARY	(1 << 4)
 #define	PGPDIG_SAVED_VALID	(1 << 5)
+    uint8_t * embedded_sig;	/* embedded signature */
+    size_t embedded_sig_len;	/* length of the embedded signature */
 
     size_t mpi_offset;		/* start of mpi data */
     pgpDigAlg alg;		/*!< algorithm specific data like MPIs */
@@ -290,8 +292,17 @@ static int pgpPrtSubType(const uint8_t *h, size_t hlen, pgpSigType sigtype,
 	    break;
 
 	case PGPSUBTYPE_EMBEDDED_SIG:
-	    /* XXX: need to verify embeded signatures of subkey binding sigs */
+	    if (_digp->sigtype != PGPSIGTYPE_SUBKEY_BINDING)
+		break;	/* do not bother for other types */
+	    if (!hashed)
+		break;	/* Subpackets in the unhashed section cannot be trusted */
+	    if (plen - 1 < 6)
+		break;	/* obviously not a signature */
+	    if (_digp->embedded_sig)
+		break;	/* just store the first one. we may need to changed this to select the most recent. */
 	    impl = *p;
+	    _digp->embedded_sig_len = plen - 1;
+	    _digp->embedded_sig = memcpy(xmalloc(plen - 1), p + 1, plen - 1);
 	    break;
 
 	case PGPSUBTYPE_PRIMARY_USERID:
@@ -667,6 +678,7 @@ pgpDigParams pgpDigParamsFree(pgpDigParams digp)
 	pgpDigAlgFree(digp->alg);
 	free(digp->userid);
 	free(digp->hash);
+	free(digp->embedded_sig);
 	memset(digp, 0, sizeof(*digp));
 	free(digp);
     }
@@ -788,6 +800,8 @@ static int hashUserID(DIGEST_CTX hash, const struct pgpPkt *pkt)
     return rc;
 }
 
+#define PGPSIGTYPE_PRIMARY_BINDING (25)
+
 static int pgpVerifySelf(pgpDigParams key, pgpDigParams selfsig,
 			const struct pgpPkt *pubkey, const struct pgpPkt *other)
 {
@@ -797,6 +811,7 @@ static int pgpVerifySelf(pgpDigParams key, pgpDigParams selfsig,
     switch (selfsig->sigtype) {
     case PGPSIGTYPE_SUBKEY_BINDING:
     case PGPSIGTYPE_SUBKEY_REVOKE:
+    case PGPSIGTYPE_PRIMARY_BINDING:
 	if (hash && other && other->tag == PGPTAG_PUBLIC_SUBKEY) {
 	    rc = hashKey(hash, pubkey, PGPTAG_PUBLIC_KEY);
 	    if (!rc)
@@ -840,7 +855,8 @@ is_self_signature(pgpDigParams digp, pgpDigParams sigdigp)
 	memcmp(digp->signid, sigdigp->signid, sizeof(digp->signid)) == 0;
 }
 
-/* parse a complete pubkey with all associated packets */
+/* Parse a complete pubkey with all associated packets */
+/* This is similar to gnupg's merge_selfsigs_main() function */
 static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams * ret)
 {
     const uint8_t *p = pkts;
@@ -1058,9 +1074,25 @@ int pgpPrtParams2(const uint8_t * pkts, size_t pktlen, unsigned int pkttype,
     return pgpPrtParams(pkts, pktlen, pkttype, ret);
 }
 
+static int verifyPrimaryBindingSig(struct pgpPkt *mainpkt, struct pgpPkt *subkeypkt, pgpDigParams subkeydig, pgpDigParams bindsigdig)
+{
+    pgpDigParams emb_digp = NULL;
+    int rc = -1;	/* assume failure */
+    if (!bindsigdig || !bindsigdig->embedded_sig)
+	return -1;
+    emb_digp = pgpDigParamsNew(PGPTAG_SIGNATURE);
+    if (pgpPrtSig(PGPTAG_SIGNATURE, bindsigdig->embedded_sig, bindsigdig->embedded_sig_len, emb_digp) == 0)
+	if (emb_digp->sigtype == PGPSIGTYPE_PRIMARY_BINDING)
+	    if (!pgpVerifySelf(subkeydig, emb_digp, mainpkt, subkeypkt))
+		rc = 0;
+    emb_digp = pgpDigParamsFree(emb_digp);
+    return rc;
+}
+
 /* Return the subkeys for a pubkey. Note that the subkey binding
  * signatures have already been verified when the pubkey was
  * parsed */
+/* This is similar to gnupg's merge_selfsigs_subkey() function */
 int pgpPrtParamsSubkeys(const uint8_t *pkts, size_t pktlen,
 			pgpDigParams mainkey, pgpDigParams **subkeys,
 			int *subkeysCount)
@@ -1072,11 +1104,16 @@ int pgpPrtParamsSubkeys(const uint8_t *pkts, size_t pktlen,
     pgpDigParams newest_digp = NULL;
     int count = 0;
     int alloced = 10;
-    struct pgpPkt pkt;
+    struct pgpPkt mainpkt, subkeypkt, pkt;
     int rc, i, j;
 
-    digps = xmalloc(alloced * sizeof(*digps));
+    if (decodePkt(p, (pend - p), &mainpkt) || mainpkt.tag != PGPTAG_PUBLIC_KEY)
+	return 1;	/* pubkey packet must come first */
+    p += (mainpkt.body - mainpkt.head) + mainpkt.blen;
 
+    memset(&subkeypkt, 0, sizeof(subkeypkt));
+
+    digps = xmalloc(alloced * sizeof(*digps));
     while (1) {
 	if (p < pend) {
 	    if (decodePkt(p, (pend - p), &pkt))
@@ -1118,6 +1155,7 @@ int pgpPrtParamsSubkeys(const uint8_t *pkts, size_t pktlen,
 		    digps = xrealloc(digps, alloced * sizeof(*digps));
 		}
 		digps[count++] = subdigp;
+		subkeypkt = pkt;
 	    }
 	} else if (pkt.tag == PGPTAG_SIGNATURE && subdigp != NULL) {
 	    sigdigp = pgpDigParamsNew(pkt.tag);
@@ -1128,10 +1166,13 @@ int pgpPrtParamsSubkeys(const uint8_t *pkts, size_t pktlen,
 	    if (sigdigp && sigdigp->sigtype == PGPSIGTYPE_SUBKEY_REVOKE) {
 		subdigp->revoked = 1;
 	    } else if (sigdigp && sigdigp->sigtype == PGPSIGTYPE_SUBKEY_BINDING) {
-		if (!newest_digp || sigdigp->time >= newest_digp->time) {
-		    newest_digp = pgpDigParamsFree(newest_digp);
-		    newest_digp = sigdigp;
-		    sigdigp = NULL;
+		/* insist on a embedded primary key binding signature */
+		if (!verifyPrimaryBindingSig(&mainpkt, &subkeypkt, subdigp, sigdigp)) {
+		    if (!newest_digp || sigdigp->time >= newest_digp->time) {
+			newest_digp = pgpDigParamsFree(newest_digp);
+			newest_digp = sigdigp;
+			sigdigp = NULL;
+		    }
 		}
 	    }
 	    sigdigp = pgpDigParamsFree(sigdigp);
