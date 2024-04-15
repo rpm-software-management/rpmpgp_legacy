@@ -838,8 +838,11 @@ static int pgpVerifySelf(pgpDigParams key, pgpDigParams selfsig,
 	break;
     }
 
-    if (hash && rc == 0)
+    if (hash && rc == 0) {
 	rc = pgpVerifySignature(key, selfsig, hash);
+	if (rc == RPMRC_NOTTRUSTED)	/* to be expected when validating the self sigs */
+	    rc = 0;
+    }
 
     rpmDigestFinal(hash, NULL, NULL, 0);
 
