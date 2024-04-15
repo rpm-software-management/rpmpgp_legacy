@@ -1187,11 +1187,9 @@ int pgpPrtParamsSubkeys(const uint8_t *pkts, size_t pktlen,
     newest_digp = pgpDigParamsFree(newest_digp);
 
     if (rc == 0) {
-	/* now strip all not-valid, revoked, or unusable subkeys */
+	/* now strip all unusable subkeys */
 	for (i = j = 0; i < count; i++) {
-	    if (!digps[i]->revoked &&
-		    (digps[i]->saved & PGPDIG_SAVED_VALID) != 0 &&
-		    (digps[i]->saved & PGPDIG_SAVED_KEY_FLAGS) != 0 &&
+	    if ((digps[i]->saved & PGPDIG_SAVED_KEY_FLAGS) != 0 &&
 		    (digps[i]->key_flags & 0x02) != 0) {
 		digps[j++] = digps[i];
 	    } else {
