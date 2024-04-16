@@ -8,6 +8,7 @@ target_sources(rpmpgp_legacy PRIVATE
 	rpmpgp_internal.h rpmpgp_internal.c rpmpgp_internal_armor.c
 )
 if (WITH_OPENSSL)
+	find_package(OpenSSL 1.0.2 REQUIRED)
 	target_sources(rpmpgp_legacy PRIVATE digest_openssl.c)
 else()
 	target_sources(rpmpgp_legacy PRIVATE digest_libgcrypt.c)

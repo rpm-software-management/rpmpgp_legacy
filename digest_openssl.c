@@ -3,8 +3,6 @@
 #include <openssl/evp.h>
 #include <openssl/rsa.h>
 #include <openssl/dsa.h>
-#include <openssl/core_names.h>
-#include <openssl/param_build.h>
 #include <rpm/rpmcrypto.h>
 
 #include "rpmpgp_internal.h"
@@ -50,10 +48,6 @@ struct pgpDigKeyRSA_s {
 
 static int constructRSASigningKey(struct pgpDigKeyRSA_s *key)
 {
-    EVP_PKEY_CTX *ctx = NULL;
-    OSSL_PARAM_BLD *param_bld = NULL;
-    OSSL_PARAM *params =NULL;
-
     if (key->evp_pkey) {
         /* We've already constructed it, so just reuse it */
         return 1;
@@ -61,34 +55,29 @@ static int constructRSASigningKey(struct pgpDigKeyRSA_s *key)
 	return 0;
     key->immutable = 1;
 
-    ctx = EVP_PKEY_CTX_new_from_name(NULL, "RSA", NULL);
-    if (!ctx)
-	goto exit;
-    param_bld = OSSL_PARAM_BLD_new();
-    if (!param_bld)
-	goto exit;
-    if (!OSSL_PARAM_BLD_push_BN(param_bld, OSSL_PKEY_PARAM_RSA_N, key->n))
-	goto exit;
-    if (!OSSL_PARAM_BLD_push_BN(param_bld, OSSL_PKEY_PARAM_RSA_E, key->e))
-	goto exit;
-    params = OSSL_PARAM_BLD_to_param(param_bld);
-    if (!params)
-	goto exit;
+    /* Create the RSA key */
+    RSA *rsa = RSA_new();
+    if (!rsa) return 0;
 
-    if (!EVP_PKEY_fromdata_init(ctx))
+    if (RSA_set0_key(rsa, key->n, key->e, NULL) <= 0)
 	goto exit;
-    if (!EVP_PKEY_fromdata(ctx, &key->evp_pkey, EVP_PKEY_PUBLIC_KEY, params))
-	goto exit;
-    EVP_PKEY_CTX_free(ctx);
     key->n = key->e = NULL;
 
+    /* Create an EVP_PKEY container to abstract the key-type. */
+    if (!(key->evp_pkey = EVP_PKEY_new()))
+	goto exit;
+
+    /* Assign the RSA key to the EVP_PKEY structure.
+       This will take over memory management of the RSA key */
+    if (!EVP_PKEY_assign_RSA(key->evp_pkey, rsa)) {
+        EVP_PKEY_free(key->evp_pkey);
+        key->evp_pkey = NULL;
+	goto exit;
+    }
+
     return 1;
-
- exit:
-    EVP_PKEY_CTX_free(ctx);
-    OSSL_PARAM_BLD_free(param_bld);
-    OSSL_PARAM_free(params);
-
+exit:
+    RSA_free(rsa);
     return 0;
 }
 
@@ -262,29 +251,40 @@ struct pgpDigKeyDSA_s {
     BIGNUM *q; /* Subprime */
     BIGNUM *g; /* Base */
     BIGNUM *y; /* Public Key */
-    EVP_PKEY *evp_pkey; /* Fully constructed key */
+
+    DSA *dsa_key; /* Fully constructed key */
 };
 
 static int constructDSASigningKey(struct pgpDigKeyDSA_s *key)
 {
     int rc;
 
-    if (key->evp_pkey) {
+    if (key->dsa_key) {
         /* We've already constructed it, so just reuse it */
         return 1;
     }
 
-    EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_from_name(NULL, "DSA", NULL);
-    OSSL_PARAM params[5] = {
-	OSSL_PARAM_BN("pbits", key->p, BN_num_bytes(key->p)*8),
-	OSSL_PARAM_BN("qbits", key->q, BN_num_bytes(key->q)*8),
-	OSSL_PARAM_BN("gindex", key->g, BN_num_bytes(key->g)*8),
-	OSSL_PARAM_utf8_string("digest", "SHA384", 0),
-	OSSL_PARAM_END,
-    };
-    EVP_PKEY_CTX_set_params(ctx, params);
-    EVP_PKEY_fromdata(ctx, &key->evp_pkey, EVP_PKEY_PUBLIC_KEY, params);
+    /* Create the DSA key */
+    DSA *dsa = DSA_new();
+    if (!dsa) return 0;
+
+    if (!DSA_set0_pqg(dsa, key->p, key->q, key->g)) {
+        rc = 0;
+        goto done;
+    }
+
+    if (!DSA_set0_key(dsa, key->y, NULL)) {
+        rc = 0;
+        goto done;
+    }
+
+    key->dsa_key = dsa;
+
     rc = 1;
+done:
+    if (rc == 0) {
+        DSA_free(dsa);
+    }
     return rc;
 }
 
@@ -349,8 +349,8 @@ static void pgpFreeKeyDSA(pgpDigAlg pgpkey)
 {
     struct pgpDigKeyDSA_s *key = pgpkey->data;
     if (key) {
-        if (key->evp_pkey) {
-            EVP_PKEY_free(key->evp_pkey);
+        if (key->dsa_key) {
+            DSA_free(key->dsa_key);
         } else {
             /* If sig->dsa_key was constructed,
              * the memory management of these BNs
@@ -467,12 +467,9 @@ static int pgpVerifySigDSA(pgpDigAlg pgpkey, pgpDigAlg pgpsig,
                            uint8_t *hash, size_t hashlen, int hash_algo)
 {
     int rc = 1; /* assume failure */
-    EVP_PKEY_CTX *pkey_ctx = NULL;
-
     struct pgpDigSigDSA_s *sig = pgpsig->data;
-    struct pgpDigKeyDSA_s *key = pgpkey->data;
 
-    void *padded_sig = NULL;
+    struct pgpDigKeyDSA_s *key = pgpkey->data;
 
     if (!constructDSASigningKey(key))
         goto done;
@@ -480,22 +477,7 @@ static int pgpVerifySigDSA(pgpDigAlg pgpkey, pgpDigAlg pgpsig,
     if (!constructDSASignature(sig))
         goto done;
 
-    pkey_ctx = EVP_PKEY_CTX_new(key->evp_pkey, NULL);
-    if (!pkey_ctx)
-        goto done;
-
-    if (EVP_PKEY_verify_init(pkey_ctx) != 1)
-        goto done;
-
-    if (EVP_PKEY_CTX_set_signature_md(pkey_ctx, getEVPMD(hash_algo)) <= 0)
-        goto done;
-
-    int pkey_len = EVP_PKEY_size(key->evp_pkey);
-    padded_sig = xcalloc(1, pkey_len);
-    if (BN_bn2binpad(sig->r, padded_sig, pkey_len) <= 0)
-        goto done;
-
-    if (EVP_PKEY_verify(pkey_ctx, padded_sig, pkey_len, hash, hashlen) == 1)
+    if (DSA_do_verify(hash, hashlen, sig->dsa_sig, key->dsa_key) == 1)
     {
         /* Success */
         rc = 0;
