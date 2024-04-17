@@ -43,17 +43,12 @@ struct pgpDigKeyRSA_s {
     BIGNUM *n; /* Common Modulus */
     BIGNUM *e; /* Public Exponent */
     EVP_PKEY *evp_pkey; /* Fully constructed key */
-    unsigned char immutable; /* if set, this key cannot be mutated */
 };
 
 static int constructRSASigningKey(struct pgpDigKeyRSA_s *key)
 {
-    if (key->evp_pkey) {
-        /* We've already constructed it, so just reuse it */
-        return 1;
-    } else if (key->immutable)
-	return 0;
-    key->immutable = 1;
+    if (key->evp_pkey)
+        return 1;	/* We've already constructed it, so just reuse it */
 
     /* Create the RSA key */
     RSA *rsa = RSA_new();
@@ -88,7 +83,7 @@ static int pgpSetKeyMpiRSA(pgpDigAlg pgpkey, int num, const uint8_t *p)
 
     if (!key)
         key = pgpkey->data = xcalloc(1, sizeof(*key));
-    else if (key->immutable)
+    else if (key->evp_pkey)
 	return 1;
 
     switch (num) {
@@ -238,7 +233,8 @@ static int pgpVerifySigRSA(pgpDigAlg pgpkey, pgpDigAlg pgpsig,
     }
 
 done:
-    EVP_PKEY_CTX_free(pkey_ctx);
+    if (pkey_ctx)
+	EVP_PKEY_CTX_free(pkey_ctx);
     free(padded_sig);
     return rc;
 }
@@ -252,40 +248,41 @@ struct pgpDigKeyDSA_s {
     BIGNUM *g; /* Base */
     BIGNUM *y; /* Public Key */
 
-    DSA *dsa_key; /* Fully constructed key */
+    EVP_PKEY *evp_pkey; /* Fully constructed key */
 };
 
 static int constructDSASigningKey(struct pgpDigKeyDSA_s *key)
 {
-    int rc;
-
-    if (key->dsa_key) {
-        /* We've already constructed it, so just reuse it */
-        return 1;
-    }
+    if (key->evp_pkey)
+        return 1;	/* We've already constructed it, so just reuse it */
 
     /* Create the DSA key */
     DSA *dsa = DSA_new();
     if (!dsa) return 0;
 
     if (!DSA_set0_pqg(dsa, key->p, key->q, key->g)) {
-        rc = 0;
-        goto done;
+        goto exit;
     }
-
     if (!DSA_set0_key(dsa, key->y, NULL)) {
-        rc = 0;
-        goto done;
+        goto exit;
     }
 
-    key->dsa_key = dsa;
+    /* Create an EVP_PKEY container to abstract the key-type. */
+    if (!(key->evp_pkey = EVP_PKEY_new()))
+	goto exit;
 
-    rc = 1;
-done:
-    if (rc == 0) {
-        DSA_free(dsa);
+    /* Assign the DSA key to the EVP_PKEY structure.
+       This will take over memory management of the RSA key */
+    if (!EVP_PKEY_assign_DSA(key->evp_pkey, dsa)) {
+        EVP_PKEY_free(key->evp_pkey);
+        key->evp_pkey = NULL;
+	goto exit;
     }
-    return rc;
+    return 1;
+
+exit:
+    DSA_free(dsa);
+    return 0;
 }
 
 
@@ -349,10 +346,10 @@ static void pgpFreeKeyDSA(pgpDigAlg pgpkey)
 {
     struct pgpDigKeyDSA_s *key = pgpkey->data;
     if (key) {
-        if (key->dsa_key) {
-            DSA_free(key->dsa_key);
+        if (key->evp_pkey) {
+            EVP_PKEY_free(key->evp_pkey);
         } else {
-            /* If sig->dsa_key was constructed,
+            /* If key->evp_pkey was constructed,
              * the memory management of these BNs
              * are freed with it. */
             BN_clear_free(key->p);
@@ -367,81 +364,71 @@ static void pgpFreeKeyDSA(pgpDigAlg pgpkey)
 /* Signature */
 
 struct pgpDigSigDSA_s {
-    BIGNUM *r;
-    BIGNUM *s;
-
-    DSA_SIG *dsa_sig;
+    unsigned char *r;
+    int rlen;
+    unsigned char *s;
+    int slen;
 };
 
-static int constructDSASignature(struct pgpDigSigDSA_s *sig)
+static void add_asn1_tag(unsigned char *p, int tag, int len)
 {
-    int rc;
-
-    if (sig->dsa_sig) {
-        /* We've already constructed it, so just reuse it */
-        return 1;
+    *p++ = tag;
+    if (len >= 256) {
+	*p++ = 130;
+	*p++ = len >> 8;
+    } else if (len > 128) {
+	*p++ = 129;
     }
+    *p++ = len;
+}
 
-    /* Create the DSA signature */
-    DSA_SIG *dsa_sig = DSA_SIG_new();
-    if (!dsa_sig) return 0;
-
-    if (!DSA_SIG_set0(dsa_sig, sig->r, sig->s)) {
-        rc = 0;
-        goto done;
-    }
-
-    sig->dsa_sig = dsa_sig;
-
-    rc = 1;
-done:
-    if (rc == 0) {
-        DSA_SIG_free(sig->dsa_sig);
-    }
-    return rc;
+static unsigned char *constructDSASignature(unsigned char *r, int rlen, unsigned char *s, int slen, size_t *siglenp)
+{
+    int len1 = rlen + (!rlen || (*r & 0x80) != 0 ? 1 : 0), hlen1 = len1 < 128 ? 2 : len1 < 256 ? 3 : 4;
+    int len2 = slen + (!slen || (*s & 0x80) != 0 ? 1 : 0), hlen2 = len2 < 128 ? 2 : len2 < 256 ? 3 : 4;
+    int len3 = hlen1 + len1 + hlen2 + len2, hlen3 = len3 < 128 ? 2 : len3 < 256 ? 3 : 4;
+    unsigned char *buf;
+    if (rlen < 0 || rlen >= 65534 || slen < 0 || slen >= 65534 || len3 > 65535)
+	return 0;	/* should never happen as pgp's MPIs have a length < 8192 */
+    buf = xmalloc(hlen3 + len3);
+    add_asn1_tag(buf, 0x30, len3);
+    add_asn1_tag(buf + hlen3, 0x02, len1);
+    buf[hlen3 + hlen1] = 0;		/* zero first byte of the integer */
+    memcpy(buf + hlen3 + hlen1 + len1 - rlen, r, rlen);
+    add_asn1_tag(buf + hlen3 + hlen1 + len1, 0x02, len2);
+    buf[hlen3 + len3 - len2] = 0;	/* zero first byte of the integer */
+    memcpy(buf + hlen3 + len3 - slen, s, slen);
+    *siglenp = hlen3 + len3;
+    return buf;
 }
 
 static int pgpSetSigMpiDSA(pgpDigAlg pgpsig, int num, const uint8_t *p)
 {
-    BIGNUM *bn = NULL;
-
     int mlen = pgpMpiLen(p) - 2;
     int rc = 1;
 
     struct pgpDigSigDSA_s *sig = pgpsig->data;
     if (!sig) {
         sig = xcalloc(1, sizeof(*sig));
+	pgpsig->data = sig;
     }
-
-    /* Create a BIGNUM from the signature pointer.
-       Note: this assumes big-endian data as required
-       by the PGP multiprecision integer format
-       (RFC4880, Section 3.2) */
-    bn = BN_bin2bn(p+2, mlen, NULL);
-    if (!bn) return 1;
 
     switch (num) {
     case 0:
-        if (sig->r) {
-            /* This should only ever happen once per signature */
-            BN_free(bn);
-            return 1;
-        }
-        sig->r = bn;
+        if (sig->r)
+            return 1;	/* This should only ever happen once per signature */
+	sig->rlen = mlen;
+        sig->r = memcpy(xmalloc(mlen), p + 2, mlen);
         rc = 0;
         break;
     case 1:
-        if (sig->s) {
-            /* This should only ever happen once per signature */
-            BN_free(bn);
-            return 1;
-        }
-        sig->s = bn;
+        if (sig->s)
+            return 1;	/* This should only ever happen once per signature */
+	sig->slen = mlen;
+        sig->s = memcpy(xmalloc(mlen), p + 2, mlen);
         rc = 0;
         break;
     }
-
-    pgpsig->data = sig;
 
     return rc;
 }
@@ -450,17 +437,10 @@ static void pgpFreeSigDSA(pgpDigAlg pgpsig)
 {
     struct pgpDigSigDSA_s *sig = pgpsig->data;
     if (sig) {
-        if (sig->dsa_sig) {
-            DSA_SIG_free(sig->dsa_sig);
-        } else {
-            /* If sig->dsa_sig was constructed,
-             * the memory management of these BNs
-             * are freed with it. */
-            BN_clear_free(sig->r);
-            BN_clear_free(sig->s);
-        }
-        free(pgpsig->data);
+	free(sig->r);
+	free(sig->s);
     }
+    free(pgpsig->data);
 }
 
 static int pgpVerifySigDSA(pgpDigAlg pgpkey, pgpDigAlg pgpsig,
@@ -468,22 +448,35 @@ static int pgpVerifySigDSA(pgpDigAlg pgpkey, pgpDigAlg pgpsig,
 {
     int rc = 1; /* assume failure */
     struct pgpDigSigDSA_s *sig = pgpsig->data;
-
     struct pgpDigKeyDSA_s *key = pgpkey->data;
+    unsigned char *xsig = NULL;		/* signature encoded for X509 */
+    size_t xsig_len = 0;
+    EVP_PKEY_CTX *pkey_ctx = NULL;
 
     if (!constructDSASigningKey(key))
         goto done;
 
-    if (!constructDSASignature(sig))
+    xsig = constructDSASignature(sig->r, sig->rlen, sig->s, sig->slen, &xsig_len);
+    if (!xsig)
         goto done;
 
-    if (DSA_do_verify(hash, hashlen, sig->dsa_sig, key->dsa_key) == 1)
+    pkey_ctx = EVP_PKEY_CTX_new(key->evp_pkey, NULL);
+    if (!pkey_ctx)
+        goto done;
+
+    if (EVP_PKEY_verify_init(pkey_ctx) != 1)
+        goto done;
+
+    if (EVP_PKEY_verify(pkey_ctx, xsig, xsig_len, hash, hashlen) == 1)
     {
         /* Success */
         rc = 0;
     }
 
 done:
+    if (pkey_ctx)
+	EVP_PKEY_CTX_free(pkey_ctx);
+    free(xsig);
     return rc;
 }
 
