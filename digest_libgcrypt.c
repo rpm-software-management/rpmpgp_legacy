@@ -236,20 +236,20 @@ static void pgpFreeKeyDSA(pgpDigAlg pgpkey)
 }
 
 
-/****************************** EDDSA **************************************/
+/****************************** ECC **************************************/
 
-struct pgpDigSigEDDSA_s {
+struct pgpDigSigECC_s {
     gcry_mpi_t r;
     gcry_mpi_t s;
 };
 
-struct pgpDigKeyEDDSA_s {
+struct pgpDigKeyECC_s {
     gcry_mpi_t q;
 };
 
-static int pgpSetSigMpiEDDSA(pgpDigAlg pgpsig, int num, const uint8_t *p)
+static int pgpSetSigMpiECC(pgpDigAlg pgpsig, int num, const uint8_t *p)
 {
-    struct pgpDigSigEDDSA_s *sig = pgpsig->data;
+    struct pgpDigSigECC_s *sig = pgpsig->data;
     int mlen = pgpMpiLen(p);
     int rc = 1;
 
@@ -269,9 +269,9 @@ static int pgpSetSigMpiEDDSA(pgpDigAlg pgpsig, int num, const uint8_t *p)
     return rc;
 }
 
-static int pgpSetKeyMpiEDDSA(pgpDigAlg pgpkey, int num, const uint8_t *p)
+static int pgpSetKeyMpiECC(pgpDigAlg pgpkey, int num, const uint8_t *p)
 {
-    struct pgpDigKeyEDDSA_s *key = pgpkey->data;
+    struct pgpDigKeyECC_s *key = pgpkey->data;
     int mlen = pgpMpiLen(p);
     int rc = 1;
 
@@ -300,34 +300,49 @@ ed25519_zero_extend(gcry_mpi_t x, unsigned char *buf, int bufl)
     return 0;
 }
 
-static int pgpVerifySigEDDSA(pgpDigAlg pgpkey, pgpDigAlg pgpsig, uint8_t *hash, size_t hashlen, int hash_algo)
+static int pgpVerifySigECC(pgpDigAlg pgpkey, pgpDigAlg pgpsig, uint8_t *hash, size_t hashlen, int hash_algo)
 {
-    struct pgpDigKeyEDDSA_s *key = pgpkey->data;
-    struct pgpDigSigEDDSA_s *sig = pgpsig->data;
+    struct pgpDigKeyECC_s *key = pgpkey->data;
+    struct pgpDigSigECC_s *sig = pgpsig->data;
     gcry_sexp_t sexp_sig = NULL, sexp_data = NULL, sexp_pkey = NULL;
     int rc = 1;
     unsigned char buf_r[32], buf_s[32];
 
     if (!sig || !key)
 	return rc;
-    if (pgpkey->curve != PGPCURVE_ED25519)
+    if (pgpkey->curve == PGPCURVE_ED25519) {
+	if (ed25519_zero_extend(sig->r, buf_r, 32) || ed25519_zero_extend(sig->s, buf_s, 32))
+	    return rc;
+	gcry_sexp_build(&sexp_sig, NULL, "(sig-val (eddsa (r %b) (s %b)))", 32, (const char *)buf_r, 32, (const char *)buf_s, 32);
+	gcry_sexp_build(&sexp_data, NULL, "(data (flags eddsa) (hash-algo sha512) (value %b))", (int)hashlen, (const char *)hash);
+	gcry_sexp_build(&sexp_pkey, NULL, "(public-key (ecc (curve \"Ed25519\") (flags eddsa) (q %M)))", key->q);
+	if (sexp_sig && sexp_data && sexp_pkey)
+	    rc = gcry_pk_verify(sexp_sig, sexp_data, sexp_pkey) == 0 ? 0 : 1;
+	gcry_sexp_release(sexp_sig);
+	gcry_sexp_release(sexp_data);
+	gcry_sexp_release(sexp_pkey);
 	return rc;
-    if (ed25519_zero_extend(sig->r, buf_r, 32) || ed25519_zero_extend(sig->s, buf_s, 32))
+    }
+    if (pgpkey->curve == PGPCURVE_NIST_P_256 || pgpkey->curve == PGPCURVE_NIST_P_384) {
+	gcry_sexp_build(&sexp_sig, NULL, "(sig-val (ecdsa (r %M) (s %M)))", sig->r, sig->s);
+	gcry_sexp_build(&sexp_data, NULL, "(data (value %b))", (int)hashlen, (const char *)hash);
+	if (pgpkey->curve == PGPCURVE_NIST_P_256)
+	    gcry_sexp_build(&sexp_pkey, NULL, "(public-key (ecc (curve \"NIST P-256\") (q %M)))", key->q);
+	else if (pgpkey->curve == PGPCURVE_NIST_P_384)
+	    gcry_sexp_build(&sexp_pkey, NULL, "(public-key (ecc (curve \"NIST P-384\") (q %M)))", key->q);
+	if (sexp_sig && sexp_data && sexp_pkey)
+	    rc = gcry_pk_verify(sexp_sig, sexp_data, sexp_pkey) == 0 ? 0 : 1;
+	gcry_sexp_release(sexp_sig);
+	gcry_sexp_release(sexp_data);
+	gcry_sexp_release(sexp_pkey);
 	return rc;
-    gcry_sexp_build(&sexp_sig, NULL, "(sig-val (eddsa (r %b) (s %b)))", 32, (const char *)buf_r, 32, (const char *)buf_s, 32);
-    gcry_sexp_build(&sexp_data, NULL, "(data (flags eddsa) (hash-algo sha512) (value %b))", (int)hashlen, (const char *)hash);
-    gcry_sexp_build(&sexp_pkey, NULL, "(public-key (ecc (curve \"Ed25519\") (flags eddsa) (q %M)))", key->q);
-    if (sexp_sig && sexp_data && sexp_pkey)
-	rc = gcry_pk_verify(sexp_sig, sexp_data, sexp_pkey) == 0 ? 0 : 1;
-    gcry_sexp_release(sexp_sig);
-    gcry_sexp_release(sexp_data);
-    gcry_sexp_release(sexp_pkey);
+    }
     return rc;
 }
 
-static void pgpFreeSigEDDSA(pgpDigAlg pgpsig)
+static void pgpFreeSigECC(pgpDigAlg pgpsig)
 {
-    struct pgpDigSigEDDSA_s *sig = pgpsig->data;
+    struct pgpDigSigECC_s *sig = pgpsig->data;
     if (sig) {
 	gcry_mpi_release(sig->r);
 	gcry_mpi_release(sig->s);
@@ -335,9 +350,9 @@ static void pgpFreeSigEDDSA(pgpDigAlg pgpsig)
     }
 }
 
-static void pgpFreeKeyEDDSA(pgpDigAlg pgpkey)
+static void pgpFreeKeyECC(pgpDigAlg pgpkey)
 {
-    struct pgpDigKeyEDDSA_s *key = pgpkey->data;
+    struct pgpDigKeyECC_s *key = pgpkey->data;
     if (key) {
 	gcry_mpi_release(key->q);
 	pgpkey->data = _free(key);
@@ -358,9 +373,9 @@ static int pgpVerifyNULL(pgpDigAlg pgpkey, pgpDigAlg pgpsig,
     return 1;
 }
 
-static int pgpSupportedCurve(int curve)
+static int pgpSupportedCurve(int algo, int curve)
 {
-    if (curve == PGPCURVE_ED25519) {
+    if (algo == PGPPUBKEYALGO_EDDSA && curve == PGPCURVE_ED25519) {
 	static int supported_ed25519;
 	if (!supported_ed25519) {
 	    gcry_sexp_t sexp = NULL;
@@ -372,6 +387,10 @@ static int pgpSupportedCurve(int curve)
 	}
 	return supported_ed25519 > 0;
     }
+    if (algo == PGPPUBKEYALGO_ECDSA && curve == PGPCURVE_NIST_P_256)
+	return 1;
+    if (algo == PGPPUBKEYALGO_ECDSA && curve == PGPCURVE_NIST_P_384)
+	return 1;
     return 0;
 }
 
@@ -390,14 +409,15 @@ pgpDigAlg pgpDigAlgNewPubkey(int algo, int curve)
         ka->free = pgpFreeKeyDSA;
         ka->mpis = 4;
         break;
+    case PGPPUBKEYALGO_ECDSA:
     case PGPPUBKEYALGO_EDDSA:
-	if (!pgpSupportedCurve(curve)) {
+	if (!pgpSupportedCurve(algo, curve)) {
 	    ka->setmpi = pgpSetMpiNULL;
 	    ka->mpis = -1;
 	    break;
 	}
-        ka->setmpi = pgpSetKeyMpiEDDSA;
-        ka->free = pgpFreeKeyEDDSA;
+        ka->setmpi = pgpSetKeyMpiECC;
+        ka->free = pgpFreeKeyECC;
         ka->mpis = 1;
         ka->curve = curve;
         break;
@@ -429,10 +449,11 @@ pgpDigAlg pgpDigAlgNewSignature(int algo)
         sa->verify = pgpVerifySigDSA;
         sa->mpis = 2;
         break;
+    case PGPPUBKEYALGO_ECDSA:
     case PGPPUBKEYALGO_EDDSA:
-        sa->setmpi = pgpSetSigMpiEDDSA;
-        sa->free = pgpFreeSigEDDSA;
-        sa->verify = pgpVerifySigEDDSA;
+        sa->setmpi = pgpSetSigMpiECC;
+        sa->free = pgpFreeSigECC;
+        sa->verify = pgpVerifySigECC;
         sa->mpis = 2;
         break;
     default:
