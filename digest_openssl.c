@@ -6,6 +6,7 @@
 #endif
 #include <openssl/rsa.h>
 #include <openssl/dsa.h>
+#include <openssl/ec.h>
 
 #include <rpm/rpmcrypto.h>
 #include "rpmpgp_internal.h"
@@ -553,6 +554,181 @@ done:
     return rc;
 }
 
+/****************************** ECDSA ***************************************/
+
+struct pgpDigKeyECDSA_s {
+    EVP_PKEY *evp_pkey; /* Fully constructed key */
+    unsigned char *q;	/* compressed point */
+    int qlen;
+};
+
+static int constructECDSASigningKey(struct pgpDigKeyECDSA_s *key, int curve)
+{
+    if (key->evp_pkey)
+	return 1;	/* We've already constructed it, so just reuse it */
+
+#if OPENSSL_VERSION_MAJOR >= 3
+    if (curve == PGPCURVE_NIST_P_256) {
+	OSSL_PARAM params[] = {
+	    OSSL_PARAM_utf8_string("group", "P-256", 5),
+	    OSSL_PARAM_octet_string("pub", key->q, key->qlen),
+	    OSSL_PARAM_END
+	};
+	key->evp_pkey = construct_pkey_from_param(EVP_PKEY_EC, params);
+    } else if (curve == PGPCURVE_NIST_P_384) {
+	OSSL_PARAM params[] = {
+	    OSSL_PARAM_utf8_string("group", "P-384", 5),
+	    OSSL_PARAM_octet_string("pub", key->q, key->qlen),
+	    OSSL_PARAM_END
+	};
+	key->evp_pkey = construct_pkey_from_param(EVP_PKEY_EC, params);
+    }
+    return key->evp_pkey ? 1 : 0;
+#else
+    /* Create the EC key */
+    EC_KEY *ec = NULL;
+    if (curve == PGPCURVE_NIST_P_256)
+	ec = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
+    else if (curve == PGPCURVE_NIST_P_384)
+	ec = EC_KEY_new_by_curve_name(NID_secp384r1);
+    if (!ec)
+	return 0;
+
+    if (!EC_KEY_oct2key(ec, key->q, key->qlen, NULL))
+        goto exit;
+
+    /* Create an EVP_PKEY container to abstract the key-type. */
+    if (!(key->evp_pkey = EVP_PKEY_new()))
+	goto exit;
+
+    /* Assign the EC key to the EVP_PKEY structure.
+       This will take over memory management of the RSA key */
+    if (!EVP_PKEY_assign_EC_KEY(key->evp_pkey, ec)) {
+        EVP_PKEY_free(key->evp_pkey);
+        key->evp_pkey = NULL;
+	goto exit;
+    }
+    return 1;
+
+exit:
+    EC_KEY_free(ec);
+    return 0;
+#endif
+}
+
+static int pgpSetKeyMpiECDSA(pgpDigAlg pgpkey, int num, const uint8_t *p)
+{
+    size_t mlen = pgpMpiLen(p) - 2;
+    struct pgpDigKeyECDSA_s *key = pgpkey->data;
+    int rc = 1;
+
+    if (!key)
+	key = pgpkey->data = xcalloc(1, sizeof(*key));
+    if (num == 0 && !key->q && mlen > 1 && p[2] == 0x04) {
+	key->qlen = mlen;
+	key->q = xmalloc(key->qlen);
+	memcpy(key->q, p + 2, key->qlen),
+	rc = 0;
+    }
+    return rc;
+}
+
+static void pgpFreeKeyECDSA(pgpDigAlg pgpkey)
+{
+    struct pgpDigKeyECDSA_s *key = pgpkey->data;
+    if (key) {
+	if (key->q)
+	    free(key->q);
+	if (key->evp_pkey)
+	    EVP_PKEY_free(key->evp_pkey);
+	free(key);
+    }
+}
+
+struct pgpDigSigECDSA_s {
+    unsigned char *r;
+    int rlen;
+    unsigned char *s;
+    int slen;
+};
+
+static int pgpSetSigMpiECDSA(pgpDigAlg pgpsig, int num, const uint8_t *p)
+{
+    int mlen = pgpMpiLen(p) - 2;
+    int rc = 1;
+
+    struct pgpDigSigECDSA_s *sig = pgpsig->data;
+    if (!sig) {
+        sig = xcalloc(1, sizeof(*sig));
+	pgpsig->data = sig;
+    }
+
+    switch (num) {
+    case 0:
+        if (sig->r)
+            return 1;	/* This should only ever happen once per signature */
+	sig->rlen = mlen;
+        sig->r = memcpy(xmalloc(mlen), p + 2, mlen);
+        rc = 0;
+        break;
+    case 1:
+        if (sig->s)
+            return 1;	/* This should only ever happen once per signature */
+	sig->slen = mlen;
+        sig->s = memcpy(xmalloc(mlen), p + 2, mlen);
+        rc = 0;
+        break;
+    }
+
+    return rc;
+}
+
+static void pgpFreeSigECDSA(pgpDigAlg pgpsig)
+{
+    struct pgpDigSigECDSA_s *sig = pgpsig->data;
+    if (sig) {
+	free(sig->r);
+	free(sig->s);
+    }
+    free(pgpsig->data);
+}
+
+static int pgpVerifySigECDSA(pgpDigAlg pgpkey, pgpDigAlg pgpsig,
+                           uint8_t *hash, size_t hashlen, int hash_algo)
+{
+    int rc = 1; /* assume failure */
+    struct pgpDigSigECDSA_s *sig = pgpsig->data;
+    struct pgpDigKeyECDSA_s *key = pgpkey->data;
+    unsigned char *xsig = NULL;		/* signature encoded for X509 */
+    size_t xsig_len = 0;
+    EVP_PKEY_CTX *pkey_ctx = NULL;
+
+    if (!constructECDSASigningKey(key, pgpkey->curve))
+        goto done;
+
+    xsig = constructDSASignature(sig->r, sig->rlen, sig->s, sig->slen, &xsig_len);
+    if (!xsig)
+        goto done;
+
+    pkey_ctx = EVP_PKEY_CTX_new(key->evp_pkey, NULL);
+    if (!pkey_ctx)
+        goto done;
+
+    if (EVP_PKEY_verify_init(pkey_ctx) != 1)
+        goto done;
+
+    if (EVP_PKEY_verify(pkey_ctx, xsig, xsig_len, hash, hashlen) == 1)
+    {
+        /* Success */
+        rc = 0;
+    }
+
+done:
+    if (pkey_ctx)
+	EVP_PKEY_CTX_free(pkey_ctx);
+    free(xsig);
+    return rc;
+}
 
 /****************************** EDDSA ***************************************/
 
@@ -664,6 +840,19 @@ static int pgpVerifyNULL(pgpDigAlg pgpkey, pgpDigAlg pgpsig,
     return 1;
 }
 
+static int pgpSupportedCurve(int algo, int curve)
+{
+#ifdef EVP_PKEY_ED25519
+    if (algo == PGPPUBKEYALGO_EDDSA && curve == PGPCURVE_ED25519)
+	return 1;
+#endif
+    if (algo == PGPPUBKEYALGO_ECDSA && curve == PGPCURVE_NIST_P_256)
+	return 1;
+    if (algo == PGPPUBKEYALGO_ECDSA && curve == PGPCURVE_NIST_P_384)
+	return 1;
+    return 0;
+}
+
 /****************************** PGP **************************************/
 pgpDigAlg pgpDigAlgNewPubkey(int algo, int curve)
 {
@@ -680,9 +869,20 @@ pgpDigAlg pgpDigAlgNewPubkey(int algo, int curve)
         ka->free = pgpFreeKeyDSA;
         ka->mpis = 4;
         break;
+    case PGPPUBKEYALGO_ECDSA:
+	if (!pgpSupportedCurve(algo, curve)) {
+	    ka->setmpi = pgpSetMpiNULL;
+	    ka->mpis = -1;
+	    break;
+	}
+        ka->setmpi = pgpSetKeyMpiECDSA;
+        ka->free = pgpFreeKeyECDSA;
+        ka->mpis = 1;
+        ka->curve = curve;
+	break;
 #ifdef EVP_PKEY_ED25519
     case PGPPUBKEYALGO_EDDSA:
-	if (curve != PGPCURVE_ED25519) {
+	if (!pgpSupportedCurve(algo, curve)) {
 	    ka->setmpi = pgpSetMpiNULL;	/* unsupported curve */
 	    ka->mpis = -1;
 	    break;
@@ -719,6 +919,12 @@ pgpDigAlg pgpDigAlgNewSignature(int algo)
         sa->setmpi = pgpSetSigMpiDSA;
         sa->free = pgpFreeSigDSA;
         sa->verify = pgpVerifySigDSA;
+        sa->mpis = 2;
+        break;
+    case PGPPUBKEYALGO_ECDSA:
+        sa->setmpi = pgpSetSigMpiECDSA;
+        sa->free = pgpFreeSigECDSA;
+        sa->verify = pgpVerifySigECDSA;
         sa->mpis = 2;
         break;
 #ifdef EVP_PKEY_ED25519
