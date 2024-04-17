@@ -1259,10 +1259,8 @@ rpmRC pgpVerifySignature(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx)
 	    res = RPMRC_NOTTRUSTED;
 	else if (key->time > sig->time)
 	    res = RPMRC_NOTTRUSTED;
-#if 0
-	else if (key->key_expire && key->key_expire < sig->time - key->time)
+	else if ((key->saved & PGPDIG_SAVED_KEY_EXPIRE) != 0 && key->key_expire && key->key_expire < sig->time - key->time)
 	    res = RPMRC_NOTTRUSTED;
-#endif
     }
 
 exit:
