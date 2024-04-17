@@ -1,10 +1,13 @@
 #include "system.h"
 
 #include <openssl/evp.h>
+#if OPENSSL_VERSION_MAJOR >= 3
+# include <openssl/params.h>
+#endif
 #include <openssl/rsa.h>
 #include <openssl/dsa.h>
-#include <rpm/rpmcrypto.h>
 
+#include <rpm/rpmcrypto.h>
 #include "rpmpgp_internal.h"
 
 static const EVP_MD *getEVPMD(int hashalgo)
@@ -33,6 +36,48 @@ static const EVP_MD *getEVPMD(int hashalgo)
         return EVP_md_null();
     }
 }
+
+
+/*********************** pkey construction *******************************/
+
+#if OPENSSL_VERSION_MAJOR >= 3
+
+static EVP_PKEY *
+construct_pkey_from_param(int id, OSSL_PARAM *params)
+{
+    EVP_PKEY *pkey = NULL;
+    EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_id(id, NULL);
+    if (!ctx || EVP_PKEY_fromdata_init(ctx) <= 0 || EVP_PKEY_fromdata(ctx, &pkey, EVP_PKEY_PUBLIC_KEY, params) <= 0)
+	pkey = NULL;
+    if (ctx)
+	EVP_PKEY_CTX_free(ctx);
+    return pkey;
+}
+
+static OSSL_PARAM 
+create_bn_param(char *key, BIGNUM *bn)
+{
+    int sz = bn ? BN_num_bytes(bn) : -1;
+    if (sz < 0 || BN_is_negative(bn)) {
+	OSSL_PARAM param = OSSL_PARAM_END;
+	return param;
+    }
+    if (sz == 0)
+	sz = 1;
+    unsigned char *buf = xmalloc(sz);
+    BN_bn2nativepad(bn, buf, sz);
+    OSSL_PARAM param = OSSL_PARAM_BN(key, buf, sz);
+    return param;
+}
+
+static void
+free_bn_param(OSSL_PARAM *param)
+{
+    free(param->data);
+}
+
+#endif
+
 /****************************** RSA **************************************/
 
 /* Key */
@@ -50,6 +95,17 @@ static int constructRSASigningKey(struct pgpDigKeyRSA_s *key)
     if (key->evp_pkey)
         return 1;	/* We've already constructed it, so just reuse it */
 
+#if OPENSSL_VERSION_MAJOR >= 3
+    OSSL_PARAM params[] = {
+	create_bn_param("n", key->n),
+	create_bn_param("e", key->e),
+	OSSL_PARAM_END
+    };
+    key->evp_pkey = construct_pkey_from_param(EVP_PKEY_RSA, params);
+    free_bn_param(params + 0);
+    free_bn_param(params + 1);
+    return key->evp_pkey ? 1 : 0;
+#else
     /* Create the RSA key */
     RSA *rsa = RSA_new();
     if (!rsa) return 0;
@@ -74,6 +130,7 @@ static int constructRSASigningKey(struct pgpDigKeyRSA_s *key)
 exit:
     RSA_free(rsa);
     return 0;
+#endif
 }
 
 static int pgpSetKeyMpiRSA(pgpDigAlg pgpkey, int num, const uint8_t *p)
@@ -256,6 +313,21 @@ static int constructDSASigningKey(struct pgpDigKeyDSA_s *key)
     if (key->evp_pkey)
         return 1;	/* We've already constructed it, so just reuse it */
 
+#if OPENSSL_VERSION_MAJOR >= 3
+    OSSL_PARAM params[] = {
+	create_bn_param("p", key->p),
+	create_bn_param("q", key->q),
+	create_bn_param("g", key->g),
+	create_bn_param("pub", key->y),
+	OSSL_PARAM_END
+    };
+    key->evp_pkey = construct_pkey_from_param(EVP_PKEY_DSA, params);
+    free_bn_param(params + 0);
+    free_bn_param(params + 1);
+    free_bn_param(params + 2);
+    free_bn_param(params + 3);
+    return key->evp_pkey ? 1 : 0;
+#else
     /* Create the DSA key */
     DSA *dsa = DSA_new();
     if (!dsa) return 0;
@@ -283,6 +355,7 @@ static int constructDSASigningKey(struct pgpDigKeyDSA_s *key)
 exit:
     DSA_free(dsa);
     return 0;
+#endif
 }
 
 
