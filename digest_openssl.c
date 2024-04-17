@@ -120,7 +120,7 @@ static int constructRSASigningKey(struct pgpDigKeyRSA_s *key)
 	goto exit;
 
     /* Assign the RSA key to the EVP_PKEY structure.
-       This will take over memory management of the RSA key */
+       This will take over memory management of the key */
     if (!EVP_PKEY_assign_RSA(key->evp_pkey, rsa)) {
         EVP_PKEY_free(key->evp_pkey);
         key->evp_pkey = NULL;
@@ -345,7 +345,7 @@ static int constructDSASigningKey(struct pgpDigKeyDSA_s *key)
 	goto exit;
 
     /* Assign the DSA key to the EVP_PKEY structure.
-       This will take over memory management of the RSA key */
+       This will take over memory management of the key */
     if (!EVP_PKEY_assign_DSA(key->evp_pkey, dsa)) {
         EVP_PKEY_free(key->evp_pkey);
         key->evp_pkey = NULL;
@@ -456,6 +456,7 @@ static void add_asn1_tag(unsigned char *p, int tag, int len)
     *p++ = len;
 }
 
+/* create the DER encoding of the SEQUENCE of two INTEGERs r and s */
 static unsigned char *constructDSASignature(unsigned char *r, int rlen, unsigned char *s, int slen, size_t *siglenp)
 {
     int len1 = rlen + (!rlen || (*r & 0x80) != 0 ? 1 : 0), hlen1 = len1 < 128 ? 2 : len1 < 256 ? 3 : 4;
@@ -602,7 +603,7 @@ static int constructECDSASigningKey(struct pgpDigKeyECDSA_s *key, int curve)
 	goto exit;
 
     /* Assign the EC key to the EVP_PKEY structure.
-       This will take over memory management of the RSA key */
+       This will take over memory management of the key */
     if (!EVP_PKEY_assign_EC_KEY(key->evp_pkey, ec)) {
         EVP_PKEY_free(key->evp_pkey);
         key->evp_pkey = NULL;
