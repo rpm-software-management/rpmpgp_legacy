@@ -1092,9 +1092,8 @@ static int verifyPrimaryBindingSig(struct pgpPkt *mainpkt, struct pgpPkt *subkey
     return rc;
 }
 
-/* Return the subkeys for a pubkey. Note that the subkey binding
- * signatures have already been verified when the pubkey was
- * parsed */
+/* Return the subkeys for a pubkey. Note that the code in pgpPrtParamsPubkey() already
+ * made sure that the signatures are self-signatures and verified ok. */
 /* This is similar to gnupg's merge_selfsigs_subkey() function */
 int pgpPrtParamsSubkeys(const uint8_t *pkts, size_t pktlen,
 			pgpDigParams mainkey, pgpDigParams **subkeys,
@@ -1108,7 +1107,7 @@ int pgpPrtParamsSubkeys(const uint8_t *pkts, size_t pktlen,
     int count = 0;
     int alloced = 10;
     struct pgpPkt mainpkt, subkeypkt, pkt;
-    int rc, i, j;
+    int rc, i;
 
     if (decodePkt(p, (pend - p), &mainpkt) || mainpkt.tag != PGPTAG_PUBLIC_KEY)
 	return 1;	/* pubkey packet must come first */
@@ -1168,9 +1167,11 @@ int pgpPrtParamsSubkeys(const uint8_t *pkts, size_t pktlen,
 	    }
 	    if (sigdigp && sigdigp->sigtype == PGPSIGTYPE_SUBKEY_REVOKE) {
 		subdigp->revoked = 1;
+		subdigp->saved |= PGPDIG_SAVED_VALID;	/* at least one binding sig */
 	    } else if (sigdigp && sigdigp->sigtype == PGPSIGTYPE_SUBKEY_BINDING) {
-		/* insist on a embedded primary key binding signature */
-		if (!verifyPrimaryBindingSig(&mainpkt, &subkeypkt, subdigp, sigdigp)) {
+		int key_flags = (sigdigp->saved & PGPDIG_SAVED_KEY_FLAGS) ? sigdigp->key_flags : 0;
+		/* insist on a embedded primary key binding signature if this is used for signing */
+		if (!(key_flags & 0x02) || !verifyPrimaryBindingSig(&mainpkt, &subkeypkt, subdigp, sigdigp)) {
 		    if (!newest_digp || sigdigp->time >= newest_digp->time) {
 			newest_digp = pgpDigParamsFree(newest_digp);
 			newest_digp = sigdigp;
@@ -1187,16 +1188,6 @@ int pgpPrtParamsSubkeys(const uint8_t *pkts, size_t pktlen,
     newest_digp = pgpDigParamsFree(newest_digp);
 
     if (rc == 0) {
-	/* now strip all unusable subkeys */
-	for (i = j = 0; i < count; i++) {
-	    if ((digps[i]->saved & PGPDIG_SAVED_KEY_FLAGS) != 0 &&
-		    (digps[i]->key_flags & 0x02) != 0) {
-		digps[j++] = digps[i];
-	    } else {
-	        pgpDigParamsFree(digps[i]);
-	    }
-	}
-	count = j;
 	*subkeys = xrealloc(digps, count * sizeof(*digps));
 	*subkeysCount = count;
     } else {
@@ -1262,8 +1253,9 @@ rpmRC pgpVerifySignature(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx)
     }
 
     if (res == RPMRC_OK && key) {
-	/* check if the key is valid, not revoked, and not expired */
-	if ((key->saved & PGPDIG_SAVED_VALID) == 0 || key->revoked)
+	if (key->tag == PGPTAG_PUBLIC_SUBKEY && ((key->saved & PGPDIG_SAVED_KEY_FLAGS) == 0 || (key->key_flags & 0x02) == 0))
+	    res = RPMRC_NOTTRUSTED;	/* subkey not suitable for signing */
+	else if ((key->saved & PGPDIG_SAVED_VALID) == 0 || key->revoked)
 	    res = RPMRC_NOTTRUSTED;
 	else if (key->time > sig->time)
 	    res = RPMRC_NOTTRUSTED;
