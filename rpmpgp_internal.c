@@ -546,7 +546,7 @@ static int pgpPrtKey(pgpTag tag, const uint8_t *h, size_t hlen,
 	}
     }	break;
     default:
-	rpmlog(RPMLOG_WARNING, _("Unsupported version of key: V%d\n"), h[0]);
+	rpmlog(RPMLOG_WARNING, _("Unsupported version of key: V%d\n"), version);
     }
 
     /* calculate the key id if we could parse the key */
