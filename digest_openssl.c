@@ -111,7 +111,7 @@ static int constructRSASigningKey(struct pgpDigKeyRSA_s *key)
     RSA *rsa = RSA_new();
     if (!rsa) return 0;
 
-    if (RSA_set0_key(rsa, key->n, key->e, NULL) <= 0)
+    if (RSA_set0_key(rsa, key->n, key->e, NULL) != 1)
 	goto exit;
     key->n = key->e = NULL;
 
@@ -121,7 +121,7 @@ static int constructRSASigningKey(struct pgpDigKeyRSA_s *key)
 
     /* Assign the RSA key to the EVP_PKEY structure.
        This will take over memory management of the key */
-    if (!EVP_PKEY_assign_RSA(key->evp_pkey, rsa)) {
+    if (EVP_PKEY_assign_RSA(key->evp_pkey, rsa) != 1) {
         EVP_PKEY_free(key->evp_pkey);
         key->evp_pkey = NULL;
 	goto exit;
@@ -147,11 +147,8 @@ static int pgpSetKeyMpiRSA(pgpDigAlg pgpkey, int num, const uint8_t *p)
     switch (num) {
     case 0:
         /* Modulus */
-        if (key->n) {
-            /* This should only ever happen once per key */
-            return 1;
-        }
-
+        if (key->n)
+            return 1;	/* This should only ever happen once per key */
 	key->nbytes = mlen;
         /* Create a BIGNUM from the pointer.
            Note: this assumes big-endian data as required by PGP */
@@ -161,11 +158,8 @@ static int pgpSetKeyMpiRSA(pgpDigAlg pgpkey, int num, const uint8_t *p)
 
     case 1:
         /* Exponent */
-        if (key->e) {
-            /* This should only ever happen once per key */
-            return 1;
-        }
-
+        if (key->e)
+            return 1;	/* This should only ever happen once per key */
         /* Create a BIGNUM from the pointer.
            Note: this assumes big-endian data as required by PGP */
         key->e = BN_bin2bn(p+2, mlen, NULL);
@@ -215,10 +209,8 @@ static int pgpSetSigMpiRSA(pgpDigAlg pgpsig, int num, const uint8_t *p)
 
     switch (num) {
     case 0:
-        if (sig->bn) {
-            /* This should only ever happen once per signature */
-            return 1;
-        }
+        if (sig->bn)
+            return 1;	/* This should only ever happen once per signature */
 
         bn = sig->bn = BN_new();
         if (!bn) return 1;
@@ -333,12 +325,12 @@ static int constructDSASigningKey(struct pgpDigKeyDSA_s *key)
     DSA *dsa = DSA_new();
     if (!dsa) return 0;
 
-    if (!DSA_set0_pqg(dsa, key->p, key->q, key->g)) {
+    if (DSA_set0_pqg(dsa, key->p, key->q, key->g) != 1)
         goto exit;
-    }
-    if (!DSA_set0_key(dsa, key->y, NULL)) {
+    key->p = key->q = key->g = NULL;
+    if (DSA_set0_key(dsa, key->y, NULL) != 1)
         goto exit;
-    }
+    key->y = NULL;
 
     /* Create an EVP_PKEY container to abstract the key-type. */
     if (!(key->evp_pkey = EVP_PKEY_new()))
@@ -346,7 +338,7 @@ static int constructDSASigningKey(struct pgpDigKeyDSA_s *key)
 
     /* Assign the DSA key to the EVP_PKEY structure.
        This will take over memory management of the key */
-    if (!EVP_PKEY_assign_DSA(key->evp_pkey, dsa)) {
+    if (EVP_PKEY_assign_DSA(key->evp_pkey, dsa) != 1) {
         EVP_PKEY_free(key->evp_pkey);
         key->evp_pkey = NULL;
 	goto exit;
@@ -380,35 +372,26 @@ static int pgpSetKeyMpiDSA(pgpDigAlg pgpkey, int num, const uint8_t *p)
     switch (num) {
     case 0:
         /* Prime */
-        if (key->p) {
-            /* This should only ever happen once per key */
-            return 1;
-        }
+        if (key->p)
+            return 1;	/* This should only ever happen once per key */
         key->p = bn;
         break;
-
     case 1:
         /* Subprime */
-        if (key->q) {
-            /* This should only ever happen once per key */
-            return 1;
-        }
+        if (key->q)
+            return 1;	/* This should only ever happen once per key */
         key->q = bn;
         break;
     case 2:
         /* Base */
-        if (key->g) {
-            /* This should only ever happen once per key */
-            return 1;
-        }
+        if (key->g)
+            return 1;	/* This should only ever happen once per key */
         key->g = bn;
         break;
     case 3:
         /* Public */
-        if (key->y) {
-            /* This should only ever happen once per key */
-            return 1;
-        }
+        if (key->y)
+            return 1;	/* This should only ever happen once per key */
         key->y = bn;
         break;
     }
@@ -595,7 +578,7 @@ static int constructECDSASigningKey(struct pgpDigKeyECDSA_s *key, int curve)
     if (!ec)
 	return 0;
 
-    if (!EC_KEY_oct2key(ec, key->q, key->qlen, NULL))
+    if (EC_KEY_oct2key(ec, key->q, key->qlen, NULL) != 1)
         goto exit;
 
     /* Create an EVP_PKEY container to abstract the key-type. */
@@ -604,7 +587,7 @@ static int constructECDSASigningKey(struct pgpDigKeyECDSA_s *key, int curve)
 
     /* Assign the EC key to the EVP_PKEY structure.
        This will take over memory management of the key */
-    if (!EVP_PKEY_assign_EC_KEY(key->evp_pkey, ec)) {
+    if (EVP_PKEY_assign_EC_KEY(key->evp_pkey, ec) != 1) {
         EVP_PKEY_free(key->evp_pkey);
         key->evp_pkey = NULL;
 	goto exit;
