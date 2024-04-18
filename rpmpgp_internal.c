@@ -71,6 +71,7 @@ struct pgpDigParams_s {
 #define	PGPDIG_SAVED_VALID	(1 << 5)
     uint8_t * embedded_sig;	/* embedded signature */
     size_t embedded_sig_len;	/* length of the embedded signature */
+    pgpKeyID_t mainid;		/* key id of main key if this is a subkey */
 
     size_t mpi_offset;		/* start of mpi data */
     pgpDigAlg alg;		/*!< algorithm specific data like MPIs */
@@ -1147,8 +1148,12 @@ int pgpPrtParamsSubkeys(const uint8_t *pkts, size_t pktlen,
 
 	if (pkt.tag == PGPTAG_PUBLIC_SUBKEY) {
 	    subdigp = pgpDigParamsNew(PGPTAG_PUBLIC_SUBKEY);
+	    /* Copy keyid of main key for error messages */
+	    memcpy(subdigp->mainid, mainkey->signid, sizeof(mainkey->signid));
 	    /* Copy UID from main key to subkey */
 	    subdigp->userid = mainkey->userid ? xstrdup(mainkey->userid) : NULL;
+	    /* if the main key is revoked, all the subkeys are also revoked */
+	    subdigp->revoked = mainkey->revoked ? 2 : 0;
 	    if (pgpPrtKey(pkt.tag, pkt.body, pkt.blen, subdigp)) {
 		subdigp = pgpDigParamsFree(subdigp);
 	    } else {
@@ -1166,7 +1171,8 @@ int pgpPrtParamsSubkeys(const uint8_t *pkts, size_t pktlen,
 		sigdigp = pgpDigParamsFree(sigdigp);
 	    }
 	    if (sigdigp && sigdigp->sigtype == PGPSIGTYPE_SUBKEY_REVOKE) {
-		subdigp->revoked = 1;
+		if (subdigp->revoked != 2)
+		    subdigp->revoked = 1;
 		subdigp->saved |= PGPDIG_SAVED_VALID;	/* at least one binding sig */
 	    } else if (sigdigp && sigdigp->sigtype == PGPSIGTYPE_SUBKEY_BINDING) {
 		int key_flags = (sigdigp->saved & PGPDIG_SAVED_KEY_FLAGS) ? sigdigp->key_flags : 0;
@@ -1199,13 +1205,77 @@ int pgpPrtParamsSubkeys(const uint8_t *pkts, size_t pktlen,
     return rc;
 }
 
-rpmRC pgpVerifySignature(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx)
+static char *
+format_keyid(pgpKeyID_t keyid, char *userid)
+{
+    char *keyidstr = rpmhex(keyid, sizeof(pgpKeyID_t));
+    if (!userid) {
+	return keyidstr;
+    } else {
+	char *ret = NULL;
+	rasprintf(&ret, "%s (%s)", keyidstr, userid);
+	free(keyidstr);
+	return ret;
+    }
+}
+
+
+static char *
+format_time(time_t *t)
+{
+    char dbuf[BUFSIZ];
+    struct tm _tm, *tms;
+    char *ret = NULL;
+
+    tms = localtime_r(t, &_tm);
+    if (!(tms && strftime(dbuf, sizeof(dbuf), "%Y-%m-%d %H:%M:%S", tms) > 0)) {
+	rasprintf(&ret, "Invalid date (%lld)", (long long int)t);
+    } else {
+	ret = xstrdup(dbuf);
+    }
+    return ret;
+}
+
+static void
+add_lint(pgpDigParams key, char **lints, const char *msg)
+{
+    char *keyid = format_keyid(key->signid, key->tag == PGPTAG_PUBLIC_SUBKEY ? NULL : key->userid);
+    char *main_keyid = key->tag == PGPTAG_PUBLIC_SUBKEY ? format_keyid(key->mainid, key->userid) : NULL;
+    *lints = NULL;
+    if (key->tag == PGPTAG_PUBLIC_SUBKEY) {
+	if (key->revoked == 2)
+	    rasprintf(lints, "Key %s is a subkey of key %s, which has been revoked", keyid, main_keyid);
+	else
+	    rasprintf(lints, "Subkey %s of key %s %s", keyid, main_keyid, msg);
+    } else {
+	rasprintf(lints, "Key %s %s", keyid, msg);
+    }
+    free(keyid);
+    free(main_keyid);
+}
+
+static void
+add_expired_lint(pgpDigParams key, char **lints)
+{
+    time_t exptime = (time_t)key->time + key->key_expire;
+    char *expdate = format_time(&exptime);
+    char *msg = NULL;
+    rasprintf(&msg, "expired on %s", expdate);
+    add_lint(key, lints, msg);
+    free(msg);
+    free(expdate);
+}
+
+
+rpmRC pgpVerifySignature2(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx, char **lints)
 {
     DIGEST_CTX ctx = rpmDigestDup(hashctx);
     uint8_t *hash = NULL;
     size_t hashlen = 0;
     rpmRC res = RPMRC_FAIL; /* assume failure */
 
+    if (lints)
+        *lints = NULL;
     if (sig == NULL || ctx == NULL)
 	goto exit;
 
@@ -1253,28 +1323,38 @@ rpmRC pgpVerifySignature(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx)
     }
 
     if (res == RPMRC_OK && key) {
-	if (key->tag == PGPTAG_PUBLIC_SUBKEY && ((key->saved & PGPDIG_SAVED_KEY_FLAGS) == 0 || (key->key_flags & 0x02) == 0))
+	if (key->revoked) {
+	    if (lints)
+		add_lint(key, lints, "has been revoked");
+	    res = RPMRC_NOTTRUSTED;
+	} else if ((key->saved & PGPDIG_SAVED_VALID) == 0) {
+	    if (lints)
+		add_lint(key, lints, "has no valid binding signature");
+	    res = RPMRC_NOTTRUSTED;
+	} else if (key->tag == PGPTAG_PUBLIC_SUBKEY && ((key->saved & PGPDIG_SAVED_KEY_FLAGS) == 0 || (key->key_flags & 0x02) == 0)) {
+	    if (lints)
+		add_lint(key, lints, "is not suitable for signing");
 	    res = RPMRC_NOTTRUSTED;	/* subkey not suitable for signing */
-	else if ((key->saved & PGPDIG_SAVED_VALID) == 0 || key->revoked)
+	} else if (key->time > sig->time) {
+	    if (lints)
+		add_lint(key, lints, "has been created after the signature");
 	    res = RPMRC_NOTTRUSTED;
-	else if (key->time > sig->time)
+	} else if ((key->saved & PGPDIG_SAVED_KEY_EXPIRE) != 0 && key->key_expire && key->key_expire < sig->time - key->time) {
+	    if (lints)
+		add_expired_lint(key, lints);
 	    res = RPMRC_NOTTRUSTED;
-	else if ((key->saved & PGPDIG_SAVED_KEY_EXPIRE) != 0 && key->key_expire && key->key_expire < sig->time - key->time)
-	    res = RPMRC_NOTTRUSTED;
+	}
     }
 
 exit:
     free(hash);
     rpmDigestFinal(ctx, NULL, NULL, 0);
     return res;
-
 }
 
-rpmRC pgpVerifySignature2(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx, char **lints)
+rpmRC pgpVerifySignature(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx)
 {
-    if (lints)
-        *lints = NULL;
-    return pgpVerifySignature(key, sig, hashctx);
+    return pgpVerifySignature2(key, sig, hashctx, NULL);
 }
 
 int pgpPubKeyCertLen(const uint8_t *pkts, size_t pktslen, size_t *certlen)
