@@ -79,14 +79,12 @@ struct pgpDigParams_s {
 
 static int getKeyID(const uint8_t *h, size_t hlen, pgpKeyID_t keyid);
 
-static inline
-unsigned int pgpGrab2(const uint8_t *s)
+static inline unsigned int pgpGrab2(const uint8_t *s)
 {
     return s[0] << 8 | s[1];
 }
 
-static inline
-unsigned int pgpGrab4(const uint8_t *s)
+static inline unsigned int pgpGrab4(const uint8_t *s)
 {
     return s[0] << 24 | s[1] << 16 | s[2] << 8 | s[3];
 }
@@ -98,8 +96,7 @@ unsigned int pgpGrab4(const uint8_t *s)
  * @param[out] *lenp	decoded length
  * @return		packet header length, 0 on error
  */
-static inline
-size_t pgpOldLen(const uint8_t *s, size_t slen, size_t * lenp)
+static inline size_t pgpOldLen(const uint8_t *s, size_t slen, size_t * lenp)
 {
     size_t dlen, lenlen;
 
@@ -132,8 +129,7 @@ size_t pgpOldLen(const uint8_t *s, size_t slen, size_t * lenp)
  * @param[out] *lenp	decoded length
  * @return		packet header length, 0 on error
  */
-static inline
-size_t pgpNewLen(const uint8_t *s, size_t slen, size_t * lenp)
+static inline size_t pgpNewLen(const uint8_t *s, size_t slen, size_t * lenp)
 {
     size_t dlen, hlen;
 
@@ -164,8 +160,7 @@ size_t pgpNewLen(const uint8_t *s, size_t slen, size_t * lenp)
  * @param[out] *lenp	decoded length
  * @return		subpacket header length (excluding type), 0 on error
  */
-static inline
-size_t pgpSubPktLen(const uint8_t *s, size_t slen, size_t * lenp)
+static inline size_t pgpSubPktLen(const uint8_t *s, size_t slen, size_t * lenp)
 {
     size_t dlen, lenlen;
 
@@ -852,8 +847,7 @@ static int pgpVerifySelf(pgpDigParams key, pgpDigParams selfsig,
 
 static const size_t RPM_MAX_OPENPGP_BYTES = 65535; /* max number of bytes in a key */
 
-static int
-is_self_signature(pgpDigParams digp, pgpDigParams sigdigp)
+static int is_self_signature(pgpDigParams digp, pgpDigParams sigdigp)
 {
     return (digp->saved & sigdigp->saved & PGPDIG_SAVED_ID) != 0 &&
 	memcmp(digp->signid, sigdigp->signid, sizeof(digp->signid)) == 0;
@@ -1207,8 +1201,7 @@ int pgpPrtParamsSubkeys(const uint8_t *pkts, size_t pktlen,
     return rc;
 }
 
-static char *
-format_keyid(pgpKeyID_t keyid, char *userid)
+static char *format_keyid(pgpKeyID_t keyid, char *userid)
 {
     char *keyidstr = rpmhex(keyid, sizeof(pgpKeyID_t));
     if (!userid) {
@@ -1222,8 +1215,7 @@ format_keyid(pgpKeyID_t keyid, char *userid)
 }
 
 
-static char *
-format_time(time_t *t)
+static char *format_time(time_t *t)
 {
     char dbuf[BUFSIZ];
     struct tm _tm, *tms;
@@ -1238,8 +1230,7 @@ format_time(time_t *t)
     return ret;
 }
 
-static void
-add_lint(pgpDigParams key, char **lints, const char *msg)
+static void add_lint(pgpDigParams key, char **lints, const char *msg)
 {
     char *keyid = format_keyid(key->signid, key->tag == PGPTAG_PUBLIC_SUBKEY ? NULL : key->userid);
     char *main_keyid = key->tag == PGPTAG_PUBLIC_SUBKEY ? format_keyid(key->mainid, key->userid) : NULL;
@@ -1256,8 +1247,7 @@ add_lint(pgpDigParams key, char **lints, const char *msg)
     free(main_keyid);
 }
 
-static void
-add_expired_lint(pgpDigParams key, char **lints)
+static void add_expired_lint(pgpDigParams key, char **lints)
 {
     time_t exptime = (time_t)key->time + key->key_expire;
     char *expdate = format_time(&exptime);
