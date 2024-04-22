@@ -77,7 +77,7 @@ struct pgpDigParams_s {
     pgpDigAlg alg;		/*!< algorithm specific data like MPIs */
 };
 
-static int getKeyID(const uint8_t *h, size_t hlen, pgpKeyID_t keyid);
+static rpmpgpRC getKeyID(const uint8_t *h, size_t hlen, pgpKeyID_t keyid);
 
 static inline unsigned int pgpGrab2(const uint8_t *s)
 {
@@ -189,9 +189,9 @@ struct pgpPkt {
     size_t blen;		/* length of body in bytes */
 };
 
-static int decodePkt(const uint8_t *p, size_t plen, struct pgpPkt *pkt)
+static rpmpgpRC decodePkt(const uint8_t *p, size_t plen, struct pgpPkt *pkt)
 {
-    int rc = -1; /* assume failure */
+    rpmpgpRC rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET; /* assume failure */
 
     /* Valid PGP packet header must always have two or more bytes in it */
     if (p && plen >= 2 && p[0] & 0x80) {
@@ -211,29 +211,25 @@ static int decodePkt(const uint8_t *p, size_t plen, struct pgpPkt *pkt)
 	if (hlen && (hlen + pkt->blen <= plen)) {
 	    pkt->head = p;
 	    pkt->body = pkt->head + hlen;
-	    rc = 0;
+	    rc = RPMPGP_OK;
 	}
     }
-
     return rc;
 }
 
-static int pgpVersion(const uint8_t *h, size_t hlen, uint8_t *version)
+static rpmpgpRC pgpVersion(const uint8_t *h, size_t hlen, uint8_t *version)
 {
     if (hlen < 1)
-	return -1;
-
+	return RPMPGP_ERROR_CORRUPT_PGP_PACKET;
     *version = h[0];
-    return 0;
+    return RPMPGP_OK;
 }
 
-static int pgpPrtSubType(const uint8_t *h, size_t hlen, pgpSigType sigtype,
-			 pgpDigParams _digp, int hashed)
+static rpmpgpRC pgpPrtSubType(const uint8_t *h, size_t hlen, pgpDigParams _digp, int hashed)
 {
     const uint8_t *p = h;
-    int rc = 0;
 
-    while (hlen > 0 && rc == 0) {
+    while (hlen > 0) {
 	size_t plen = 0, lenlen;
 	int impl = 0;
 	lenlen = pgpSubPktLen(p, hlen, &plen);
@@ -249,7 +245,7 @@ static int pgpPrtSubType(const uint8_t *h, size_t hlen, pgpSigType sigtype,
 	    if (plen-1 != 4)
 		break; /* other lengths not understood */
 	    if (_digp->saved & PGPDIG_SAVED_TIME)
-		return 1; /* duplicate timestamps not allowed */
+		return RPMPGP_ERROR_DUPLICATE_DATA;
 	    impl = *p;
 	    _digp->time = pgpGrab4(p + 1);
 	    _digp->saved |= PGPDIG_SAVED_TIME;
@@ -269,7 +265,7 @@ static int pgpPrtSubType(const uint8_t *h, size_t hlen, pgpSigType sigtype,
 	    if (!hashed)
 		break;	/* Subpackets in the unhashed section cannot be trusted */
 	    if (_digp->saved & PGPDIG_SAVED_KEY_FLAGS)
-		return 1;	/* Reject duplicate key usage flags */
+		return RPMPGP_ERROR_DUPLICATE_DATA;
 	    impl = *p;
 	    _digp->key_flags = plen >= 2 ? p[1] : 0;
 	    _digp->saved |= PGPDIG_SAVED_KEY_FLAGS;
@@ -281,17 +277,17 @@ static int pgpPrtSubType(const uint8_t *h, size_t hlen, pgpSigType sigtype,
 	    if (plen-1 != 4)
 		break; /* other lengths not understood */
 	    if (_digp->saved & PGPDIG_SAVED_KEY_EXPIRE)
-		return 1;	/* Reject duplicate key expire time */
+		return RPMPGP_ERROR_DUPLICATE_DATA;
 	    impl = *p;
 	    _digp->key_expire = pgpGrab4(p + 1);
 	    _digp->saved |= PGPDIG_SAVED_KEY_EXPIRE;
 	    break;
 
 	case PGPSUBTYPE_EMBEDDED_SIG:
-	    if (_digp->sigtype != PGPSIGTYPE_SUBKEY_BINDING)
-		break;	/* do not bother for other types */
 	    if (!hashed)
 		break;	/* Subpackets in the unhashed section cannot be trusted */
+	    if (_digp->sigtype != PGPSIGTYPE_SUBKEY_BINDING)
+		break;	/* do not bother for other types */
 	    if (plen - 1 < 6)
 		break;	/* obviously not a signature */
 	    if (_digp->embedded_sig)
@@ -316,16 +312,15 @@ static int pgpPrtSubType(const uint8_t *h, size_t hlen, pgpSigType sigtype,
 	}
 
 	if (!impl && (p[0] & PGPSUBTYPE_CRITICAL))
-	    rc = 1;
+	    return RPMPGP_ERROR_UNKNOWN_CRITICAL_PKT;
 
 	p += plen;
 	hlen -= plen;
     }
 
     if (hlen != 0)
-	rc = 1;
-
-    return rc;
+	return RPMPGP_ERROR_CORRUPT_PGP_PACKET;
+    return RPMPGP_OK;
 }
 
 static pgpDigAlg pgpDigAlgFree(pgpDigAlg alg)
@@ -338,10 +333,11 @@ static pgpDigAlg pgpDigAlgFree(pgpDigAlg alg)
     return NULL;
 }
 
-static int processMpis(const int mpis, pgpDigAlg alg,
+static rpmpgpRC processMpis(const int mpis, pgpDigAlg alg,
 		       const uint8_t *p, const uint8_t *const pend)
 {
-    int i = 0, rc = 1; /* assume failure */
+    rpmpgpRC rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;		/* assume failure */
+    int i = 0;
     for (; i < mpis && pend - p >= 2; i++) {
 	unsigned int mpil = pgpMpiLen(p);
 	if (pend - p < mpil)
@@ -353,47 +349,48 @@ static int processMpis(const int mpis, pgpDigAlg alg,
 
     /* Does the size and number of MPI's match our expectations? */
     if (p == pend && i == mpis)
-	rc = 0;
+	rc = RPMPGP_OK;
     return rc;
 }
 
-static int pgpPrtSigParams(pgpTag tag, const uint8_t *h, size_t hlen,
+static rpmpgpRC pgpPrtSigParams(pgpTag tag, const uint8_t *h, size_t hlen,
 		pgpDigParams sigp)
 {
-    int rc = 1; /* assume failure */
-    pgpDigAlg alg = pgpDigAlgNewSignature(sigp->pubkey_algo);
-
+    rpmpgpRC rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;		/* assume failure */
     /* We can't handle more than one sig at a time */
-    if (sigp->mpi_offset && sigp->mpi_offset < hlen && sigp->alg == NULL && sigp->tag == PGPTAG_SIGNATURE)
+    if (sigp->alg || !sigp->mpi_offset || sigp->mpi_offset > hlen || sigp->tag != PGPTAG_SIGNATURE)
+	return RPMPGP_ERROR_INTERNAL;
+    pgpDigAlg alg = pgpDigAlgNewSignature(sigp->pubkey_algo);
+    if (alg->mpis < 0)
+	rc = RPMPGP_ERROR_UNSUPPORTED_ALGORITHM;
+    else
 	rc = processMpis(alg->mpis, alg, h + sigp->mpi_offset, h + hlen);
-    if (rc == 0)
+    if (rc == RPMPGP_OK)
 	sigp->alg = alg;
     else
 	pgpDigAlgFree(alg);
     return rc;
 }
 
-static int pgpPrtSigNoMPI(pgpTag tag, const uint8_t *h, size_t hlen,
+static rpmpgpRC pgpPrtSigNoMPI(pgpTag tag, const uint8_t *h, size_t hlen,
 		     pgpDigParams _digp)
 {
-    uint8_t version = 0;
+    rpmpgpRC rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;		/* assume failure */
     const uint8_t * p;
     size_t plen;
-    int rc = 1;
 
-    if (_digp->version || _digp->saved)
-	return rc;	/* need empty pgpDigParams */
+    if (_digp->version || _digp->saved || _digp->tag != PGPTAG_SIGNATURE)
+	return RPMPGP_ERROR_INTERNAL;
 
-    if (pgpVersion(h, hlen, &version))
-	return rc;
+    if (pgpVersion(h, hlen, &_digp->version))
+	return RPMPGP_ERROR_CORRUPT_PGP_PACKET;
 
-    switch (version) {
+    switch (_digp->version) {
     case 3:
     {   pgpPktSigV3 v = (pgpPktSigV3)h;
 
 	if (hlen <= sizeof(*v) || v->hashlen != 5)
-	    return 1;
-	_digp->version = v->version;
+	    return RPMPGP_ERROR_CORRUPT_PGP_PACKET;
 	_digp->hashlen = v->hashlen;
 	_digp->sigtype = v->sigtype;
 	_digp->hash = memcpy(xmalloc(v->hashlen), &v->sigtype, v->hashlen);
@@ -404,7 +401,7 @@ static int pgpPrtSigNoMPI(pgpTag tag, const uint8_t *h, size_t hlen,
 	_digp->hash_algo = v->hash_algo;
 	memcpy(_digp->signhash16, v->signhash16, sizeof(_digp->signhash16));
 	_digp->mpi_offset = sizeof(*v);
-	rc = 0;
+	rc = RPMPGP_OK;
     }	break;
     case 4:
     {   pgpPktSigV4 v = (pgpPktSigV4)h;
@@ -412,8 +409,7 @@ static int pgpPrtSigNoMPI(pgpTag tag, const uint8_t *h, size_t hlen,
 	int hashed;
 
 	if (hlen <= sizeof(*v))
-	    return 1;
-	_digp->version = v->version;
+	    return RPMPGP_ERROR_CORRUPT_PGP_PACKET;
 	_digp->sigtype = v->sigtype;
 	_digp->pubkey_algo = v->pubkey_algo;
 	_digp->hash_algo = v->hash_algo;
@@ -422,45 +418,46 @@ static int pgpPrtSigNoMPI(pgpTag tag, const uint8_t *h, size_t hlen,
 	p = &v->hashlen[0];
 	for (hashed = 1; hashed >= 0; hashed--) {
 	    if (p > hend || hend - p < 2)
-		return 1;
+		return RPMPGP_ERROR_CORRUPT_PGP_PACKET;
 	    plen = pgpGrab2(p);
 	    p += 2;
 	    if (hend - p < plen)
-		return 1;
+		return RPMPGP_ERROR_CORRUPT_PGP_PACKET;
 	    if (hashed) {
 		_digp->hashlen = sizeof(*v) + plen;
 		_digp->hash = memcpy(xmalloc(_digp->hashlen), v, _digp->hashlen);
 	    }
-	    if (pgpPrtSubType(p, plen, v->sigtype, _digp, hashed))
-		return 1;
+	    rc = pgpPrtSubType(p, plen, _digp, hashed);
+	    if (rc != RPMPGP_OK)
+		return rc;
 	    p += plen;
 	}
 
 	if (!(_digp->saved & PGPDIG_SAVED_TIME))
-	    return 1; /* RFC 4880 §5.2.3.4 creation time MUST be present */
+	    return RPMPGP_ERROR_NO_CREATION_TIME;	/* RFC 4880 §5.2.3.4 creation time MUST be present */
 
 	if (p > hend || hend - p < 2)
-	    return 1;
+	    return RPMPGP_ERROR_CORRUPT_PGP_PACKET;
 	memcpy(_digp->signhash16, p, sizeof(_digp->signhash16));
 	p += 2;
 
 	if (p > hend)
-	    return 1;
+	    return RPMPGP_ERROR_CORRUPT_PGP_PACKET;
 	_digp->mpi_offset = p - h;
-	rc = 0;
+	rc = RPMPGP_OK;
     }	break;
     default:
-	rpmlog(RPMLOG_WARNING, _("Unsupported version of signature: V%d\n"), version);
+	rc = RPMPGP_ERROR_UNSUPPORTED_VERSION;
 	break;
     }
     return rc;
 }
 
-static int pgpPrtSig(pgpTag tag, const uint8_t *h, size_t hlen,
+static rpmpgpRC pgpPrtSig(pgpTag tag, const uint8_t *h, size_t hlen,
 		     pgpDigParams _digp)
 {
-    int rc = pgpPrtSigNoMPI(tag, h, hlen, _digp);
-    if (!rc)
+    rpmpgpRC rc = pgpPrtSigNoMPI(tag, h, hlen, _digp);
+    if (rc == RPMPGP_OK)
 	rc = pgpPrtSigParams(tag, h, hlen, _digp);
     return rc;
 }
@@ -485,89 +482,91 @@ static int pgpCurveByOid(const uint8_t *p, int l)
     return 0;
 }
 
-static int pgpPrtPubkeyParams(pgpTag tag, const uint8_t *h, size_t hlen,
+static rpmpgpRC pgpPrtKeyParams(pgpTag tag, const uint8_t *h, size_t hlen,
 		pgpDigParams keyp)
 {
-    int rc = 1; /* assume failure */
+    rpmpgpRC rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;		/* assume failure */
     const uint8_t *p;
     int curve = 0;
     /* We can't handle more than one key at a time */
     if (keyp->alg || !keyp->mpi_offset || keyp->mpi_offset > hlen)
-	return rc;
+	return  RPMPGP_ERROR_INTERNAL;
     p = h + keyp->mpi_offset;
     if (keyp->pubkey_algo == PGPPUBKEYALGO_EDDSA || keyp->pubkey_algo == PGPPUBKEYALGO_ECDSA) {
 	int len = (hlen > 1) ? p[0] : 0;
 	if (len == 0 || len == 0xff || len >= hlen)
-	    return rc;
+	    return RPMPGP_ERROR_CORRUPT_PGP_PACKET;
 	curve = pgpCurveByOid(p + 1, len);
+	if (!curve)
+	    return RPMPGP_ERROR_UNSUPPORTED_CURVE;
 	p += len + 1;
     }
-    pgpDigAlg keyalg = pgpDigAlgNewPubkey(keyp->pubkey_algo, curve);
-    rc = processMpis(keyalg->mpis, keyalg, p, h + hlen);
-    if (rc == 0) {
-	keyp->alg = keyalg;
-    } else {
-	pgpDigAlgFree(keyalg);
-    }
+    pgpDigAlg alg = pgpDigAlgNewPubkey(keyp->pubkey_algo, curve);
+    if (alg->mpis < 0)
+	rc = RPMPGP_ERROR_UNSUPPORTED_ALGORITHM;
+    else
+	rc = processMpis(alg->mpis, alg, p, h + hlen);
+    if (rc == RPMPGP_OK)
+	keyp->alg = alg;
+    else
+	pgpDigAlgFree(alg);
     return rc;
 }
 
-static int pgpPrtKey(pgpTag tag, const uint8_t *h, size_t hlen,
+static rpmpgpRC pgpPrtKey(pgpTag tag, const uint8_t *h, size_t hlen,
 		     pgpDigParams _digp)
 {
-    uint8_t version = 0;
-    int rc = 1;
+    rpmpgpRC rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;		/* assume failure */
 
-    if (_digp->version || _digp->saved)
-	return rc;	/* need empty pgpDigParams */
-    if (_digp->tag != PGPTAG_PUBLIC_KEY && _digp->tag != PGPTAG_PUBLIC_SUBKEY)
-	return rc;	/* wrong type */
+    if (_digp->version || _digp->saved || (_digp->tag != PGPTAG_PUBLIC_KEY &&
+		_digp->tag != PGPTAG_PUBLIC_SUBKEY))
+	return RPMPGP_ERROR_INTERNAL;
 
-    if (pgpVersion(h, hlen, &version))
-	return rc;
+    if (pgpVersion(h, hlen, &_digp->version))
+	return RPMPGP_ERROR_CORRUPT_PGP_PACKET;
 
     /* We only permit V4 keys, V3 keys are long long since deprecated */
-    switch (version) {
+    switch (_digp->version) {
     case 4:
     {   pgpPktKeyV4 v = (pgpPktKeyV4)h;
 
-	if (hlen > sizeof(*v)) {
-	    _digp->version = v->version;
-	    _digp->time = pgpGrab4(v->time);
-	    _digp->saved |= PGPDIG_SAVED_TIME;
-	    _digp->pubkey_algo = v->pubkey_algo;
-	    _digp->mpi_offset = sizeof(*v);
-	    rc = pgpPrtPubkeyParams(tag, h, hlen, _digp);
-	}
+	if (hlen <= sizeof(*v))
+	    return RPMPGP_ERROR_CORRUPT_PGP_PACKET;
+	_digp->time = pgpGrab4(v->time);
+	_digp->saved |= PGPDIG_SAVED_TIME;
+	_digp->pubkey_algo = v->pubkey_algo;
+	_digp->mpi_offset = sizeof(*v);
+	rc = RPMPGP_OK;
     }	break;
     default:
-	rpmlog(RPMLOG_WARNING, _("Unsupported version of key: V%d\n"), version);
+	rc = RPMPGP_ERROR_UNSUPPORTED_VERSION;
+	break;
     }
 
+    /* read mpi data if there was no error */
+    if (rc == RPMPGP_OK)
+	rc = pgpPrtKeyParams(tag, h, hlen, _digp);
     /* calculate the key id if we could parse the key */
-    if (!rc) {
-	rc = getKeyID(h, hlen, _digp->signid);
-	if (rc)
-	    memset(_digp->signid, 0, sizeof(_digp->signid));
-	else
+    if (rc == RPMPGP_OK) {
+	if ((rc = getKeyID(h, hlen, _digp->signid)) == RPMPGP_OK)
 	    _digp->saved |= PGPDIG_SAVED_ID;
     }
     return rc;
 }
 
-static int pgpPrtUserID(pgpTag tag, const uint8_t *h, size_t hlen,
+static rpmpgpRC pgpPrtUserID(pgpTag tag, const uint8_t *h, size_t hlen,
 			pgpDigParams _digp)
 {
     free(_digp->userid);
     _digp->userid = memcpy(xmalloc(hlen+1), h, hlen);
     _digp->userid[hlen] = '\0';
-    return 0;
+    return RPMPGP_OK;
 }
 
-static int getPubkeyFingerprint(const uint8_t *h, size_t hlen,
+static rpmpgpRC getPubkeyFingerprint(const uint8_t *h, size_t hlen,
 			  uint8_t **fp, size_t *fplen)
 {
-    int rc = -1; /* assume failure */
+    rpmpgpRC rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;		/* assume failure */
     const uint8_t *se;
     const uint8_t *pend = h + hlen;
     uint8_t version = 0;
@@ -602,11 +601,11 @@ static int getPubkeyFingerprint(const uint8_t *h, size_t hlen,
 	    mpis = 4;
 	    break;
 	default:
-	    return rc;
+	    return RPMPGP_ERROR_UNSUPPORTED_ALGORITHM;
 	}
 
 	/* Does the size and number of MPI's match our expectations? */
-	if (processMpis(mpis, NULL, se, pend) == 0) {
+	if (processMpis(mpis, NULL, se, pend) == RPMPGP_OK) {
 	    DIGEST_CTX ctx = rpmDigestInit(RPM_HASH_SHA1, RPMDIGEST_NONE);
 	    uint8_t *d = NULL;
 	    size_t dlen = 0;
@@ -617,7 +616,7 @@ static int getPubkeyFingerprint(const uint8_t *h, size_t hlen,
 	    (void) rpmDigestFinal(ctx, (void **)&d, &dlen, 0);
 
 	    if (dlen == 20) {
-		rc = 0;
+		rc = RPMPGP_OK;
 		*fp = d;
 		*fplen = dlen;
 	    } else {
@@ -627,26 +626,28 @@ static int getPubkeyFingerprint(const uint8_t *h, size_t hlen,
 
       }	break;
     default:
-	rpmlog(RPMLOG_WARNING, _("Unsupported version of key: V%d\n"), version);
+	rc = RPMPGP_ERROR_UNSUPPORTED_VERSION;
+	break;
     }
     return rc;
 }
 
-static int getKeyID(const uint8_t *h, size_t hlen, pgpKeyID_t keyid)
+static rpmpgpRC getKeyID(const uint8_t *h, size_t hlen, pgpKeyID_t keyid)
 {
     uint8_t *fp = NULL;
     size_t fplen = 0;
-    int rc = getPubkeyFingerprint(h, hlen, &fp, &fplen);
-    if (fp && fplen > 8) {
+    rpmpgpRC rc = getPubkeyFingerprint(h, hlen, &fp, &fplen);
+    if (rc == RPMPGP_OK && fp && fplen > 8)
 	memcpy(keyid, (fp + (fplen-8)), 8);
-	free(fp);
-    }
+    else if (rc == RPMPGP_OK)
+	rc = RPMPGP_ERROR_INTERNAL;
+    free(fp);
     return rc;
 }
 
-static int pgpPrtPkt(struct pgpPkt *p, pgpDigParams _digp)
+static rpmpgpRC pgpPrtPkt(struct pgpPkt *p, pgpDigParams _digp)
 {
-    int rc = 0;
+    rpmpgpRC rc = RPMPGP_OK;
 
     switch (p->tag) {
     case PGPTAG_SIGNATURE:
@@ -659,12 +660,11 @@ static int pgpPrtPkt(struct pgpPkt *p, pgpDigParams _digp)
 	rc = pgpPrtUserID(p->tag, p->body, p->blen, _digp);
 	break;
     case PGPTAG_RESERVED:
-	rc = -1;
+	rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;
 	break;
     default:
 	break;
     }
-
     return rc;
 }
 
@@ -715,7 +715,6 @@ int pgpSignatureType(pgpDigParams _digp)
 
     if (_digp && _digp->tag == PGPTAG_SIGNATURE)
 	rc = _digp->sigtype;
-
     return rc;
 }
 
@@ -762,9 +761,9 @@ static pgpDigParams pgpDigParamsNew(uint8_t tag)
     return digp;
 }
 
-static int hashKey(DIGEST_CTX hash, const struct pgpPkt *pkt, int exptag)
+static rpmpgpRC hashKey(DIGEST_CTX hash, const struct pgpPkt *pkt, int exptag)
 {
-    int rc = -1;
+    rpmpgpRC rc = RPMPGP_ERROR_INTERNAL;
     if (pkt->tag == exptag) {
 	uint8_t head[] = {
 	    0x99,
@@ -773,14 +772,14 @@ static int hashKey(DIGEST_CTX hash, const struct pgpPkt *pkt, int exptag)
 	};
 	rpmDigestUpdate(hash, head, 3);
 	rpmDigestUpdate(hash, pkt->body, pkt->blen);
-	rc = 0;
+	rc = RPMPGP_OK;
     }
     return rc;
 }
 
-static int hashUserID(DIGEST_CTX hash, const struct pgpPkt *pkt)
+static rpmpgpRC hashUserID(DIGEST_CTX hash, const struct pgpPkt *pkt)
 {
-    int rc = -1;
+    rpmpgpRC rc = RPMPGP_ERROR_INTERNAL;
     if (pkt->tag == PGPTAG_USER_ID) {
 	uint8_t head[] = {
 	    0xb4,
@@ -791,17 +790,17 @@ static int hashUserID(DIGEST_CTX hash, const struct pgpPkt *pkt)
 	};
 	rpmDigestUpdate(hash, head, 5);
 	rpmDigestUpdate(hash, pkt->body, pkt->blen);
-	rc = 0;
+	rc = RPMPGP_OK;
     }
     return rc;
 }
 
 #define PGPSIGTYPE_PRIMARY_BINDING (25)
 
-static int pgpVerifySelf(pgpDigParams key, pgpDigParams selfsig,
+static rpmpgpRC pgpVerifySelf(pgpDigParams key, pgpDigParams selfsig,
 			const struct pgpPkt *mainpkt, const struct pgpPkt *sectionpkt)
 {
-    int rc = -1;
+    int rc = RPMPGP_ERROR_SELFSIG_VERIFICATION;
     DIGEST_CTX hash = rpmDigestInit(selfsig->hash_algo, 0);
 
     switch (selfsig->sigtype) {
@@ -810,7 +809,7 @@ static int pgpVerifySelf(pgpDigParams key, pgpDigParams selfsig,
     case PGPSIGTYPE_PRIMARY_BINDING:
 	if (hash && sectionpkt && sectionpkt->tag == PGPTAG_PUBLIC_SUBKEY) {
 	    rc = hashKey(hash, mainpkt, PGPTAG_PUBLIC_KEY);
-	    if (!rc)
+	    if (rc == RPMPGP_OK)
 		rc = hashKey(hash, sectionpkt, PGPTAG_PUBLIC_SUBKEY);
 	}
 	break;
@@ -821,7 +820,7 @@ static int pgpVerifySelf(pgpDigParams key, pgpDigParams selfsig,
     case PGPSIGTYPE_CERT_REVOKE:
 	if (hash && sectionpkt && sectionpkt->tag == PGPTAG_USER_ID) {
 	    rc = hashKey(hash, mainpkt, PGPTAG_PUBLIC_KEY);
-	    if (!rc)
+	    if (rc == RPMPGP_OK)
 		rc = hashUserID(hash, sectionpkt);
 	}
 	break;
@@ -834,16 +833,29 @@ static int pgpVerifySelf(pgpDigParams key, pgpDigParams selfsig,
 	break;
     }
 
-    if (hash && rc == 0) {
-	rc = pgpVerifySignature(key, selfsig, hash);
-	if (rc == RPMRC_NOTTRUSTED)	/* to be expected when validating the self sigs */
-	    rc = 0;
+    if (rc == RPMPGP_OK) {
+	rpmRC rc2 = pgpVerifySignature(key, selfsig, hash);
+	if (rc2 != RPMRC_OK && rc2 != RPMRC_NOTTRUSTED)	/* to be expected when validating the self sigs */
+	    rc = RPMPGP_ERROR_SELFSIG_VERIFICATION;
     }
-
     rpmDigestFinal(hash, NULL, NULL, 0);
-
     return rc;
 }
+
+static rpmpgpRC verifyPrimaryBindingSig(struct pgpPkt *mainpkt, struct pgpPkt *subkeypkt, pgpDigParams subkeydig, pgpDigParams bindsigdig)
+{
+    pgpDigParams emb_digp = NULL;
+    int rc = RPMPGP_ERROR_SELFSIG_VERIFICATION;		/* assume failure */
+    if (!bindsigdig || !bindsigdig->embedded_sig)
+	return rc;
+    emb_digp = pgpDigParamsNew(PGPTAG_SIGNATURE);
+    if (pgpPrtSig(PGPTAG_SIGNATURE, bindsigdig->embedded_sig, bindsigdig->embedded_sig_len, emb_digp) == 0)
+	if (emb_digp->sigtype == PGPSIGTYPE_PRIMARY_BINDING)
+	    rc = pgpVerifySelf(subkeydig, emb_digp, mainpkt, subkeypkt);
+    emb_digp = pgpDigParamsFree(emb_digp);
+    return rc;
+}
+
 
 static const size_t RPM_MAX_OPENPGP_BYTES = 65535; /* max number of bytes in a key */
 
@@ -853,9 +865,76 @@ static int is_self_signature(pgpDigParams digp, pgpDigParams sigdigp)
 	memcmp(digp->signid, sigdigp->signid, sizeof(digp->signid)) == 0;
 }
 
+static void add_error_lint(pgpDigParams digp, rpmpgpRC error, char **lints)
+{
+    const char *msg = NULL;
+    if (error == RPMPGP_OK || !lints)
+	return;
+    if (digp) {
+	switch (error) {
+	case RPMPGP_ERROR_UNSUPPORTED_VERSION:
+	    if (digp->tag == PGPTAG_PUBLIC_KEY || digp->tag == PGPTAG_PUBLIC_SUBKEY)
+		rasprintf(lints, "Unsupported pubkey version (V%d)", digp->version);
+	    else if (digp->tag == PGPTAG_SIGNATURE)
+		rasprintf(lints, "Unsupported signature version (V%d)", digp->version);
+	    else
+		rasprintf(lints, "Unsupported packet version (V%d)", digp->version);
+	    return;
+	case RPMPGP_ERROR_UNSUPPORTED_ALGORITHM:
+	    rasprintf(lints, "Unsupported algorithm (%d)", digp->pubkey_algo);
+	    return;
+	default:
+	    break;
+	}
+    }
+    switch (error) {
+    case RPMPGP_ERROR_INTERNAL:
+	msg = "Internal PGP parser error";
+	break;
+    case RPMPGP_ERROR_CORRUPT_PGP_PACKET:
+	msg = "Corrupt PGP packet";
+	break;
+    case RPMPGP_ERROR_UNEXPECTED_PGP_PACKET:
+	msg = "Unexpected PGP packet";
+	break;
+    case RPMPGP_ERROR_NO_CREATION_TIME:
+	msg = "Signature without creation time";
+	break;
+    case RPMPGP_ERROR_DUPLICATE_DATA:
+	msg = "Duplicate data in signature";
+	break;
+    case RPMPGP_ERROR_UNKNOWN_CRITICAL_PKT:
+	msg = "Unknown critical packet in signature";
+	break;
+    case RPMPGP_ERROR_BAD_PUBKEY_STRUCTURE:
+	msg = "Bad pubkey structure";
+	break;
+    case RPMPGP_ERROR_SELFSIG_VERIFICATION:
+	msg = "Pubkey self-signature verification failure";
+	break;
+    case RPMPGP_ERROR_MISSING_SELFSIG:
+	msg = "Pubkey is missing a self-signature";
+	break;
+    case RPMPGP_ERROR_UNSUPPORTED_VERSION:
+	msg = "Unsupported packet version";
+	break;
+    case RPMPGP_ERROR_UNSUPPORTED_ALGORITHM:
+	msg = "Unsupported pubkey algorithm";
+	break;
+    case RPMPGP_ERROR_UNSUPPORTED_CURVE:
+	msg = "Unsupported pubkey curve";
+	break;
+    default:
+	rasprintf(lints, "Unknown error (%d)", error);
+	return;
+    }
+    *lints = xstrdup(msg);
+}
+
 /* Parse a complete pubkey with all associated packets */
 /* This is similar to gnupg's merge_selfsigs_main() function */
-static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams * ret)
+static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams * ret,
+                              char **lints)
 {
     const uint8_t *p = pkts;
     const uint8_t *pend = pkts + pktlen;
@@ -863,37 +942,51 @@ static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams 
     pgpDigParams sigdigp = NULL;
     pgpDigParams newest_digp = NULL;
     int useridpkt, subkeypkt;
-    int rc = -1; /* assume failure */
+    rpmpgpRC rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;		/* assume failure */
     int prevtag = 0;
     uint32_t key_expire_sig_time = 0;
     uint32_t key_flags_sig_time = 0;
     struct pgpPkt mainpkt, sectionpkt;
 
-    if (pktlen > RPM_MAX_OPENPGP_BYTES)
-	return rc; /* reject absurdly large data */
+
+    if (lints)
+	*lints = NULL;
 
     /* parse the main pubkey */
-    if (decodePkt(p, (pend - p), &mainpkt) || mainpkt.tag != PGPTAG_PUBLIC_KEY)
-	return rc;	/* pubkey packet must come first */
+    if (pktlen > RPM_MAX_OPENPGP_BYTES || decodePkt(p, (pend - p), &mainpkt)) {
+	add_error_lint(NULL, RPMPGP_ERROR_CORRUPT_PGP_PACKET, lints);
+	return -1;
+    }
+    if (mainpkt.tag != PGPTAG_PUBLIC_KEY) {
+	add_error_lint(NULL, RPMPGP_ERROR_UNEXPECTED_PGP_PACKET, lints);
+	return -1;	/* pubkey packet must come first */
+    }
     p += (mainpkt.body - mainpkt.head) + mainpkt.blen;
 
     /* create dig for the main pubkey and parse the pubkey packet */
     digp = pgpDigParamsNew(mainpkt.tag);
-    if (pgpPrtPkt(&mainpkt, digp)) {
+    if ((rc = pgpPrtPkt(&mainpkt, digp)) != RPMPGP_OK) {
+	if (lints)
+	    add_error_lint(digp, rc, lints);
 	pgpDigParamsFree(digp);
-	return rc;
+	return -1;
     }
 
     useridpkt = subkeypkt = 0;		/* type of the section packet */
     memset(&sectionpkt, 0, sizeof(sectionpkt));
 
-    while (1) {
+    rc = RPMPGP_OK;
+    while (rc == RPMPGP_OK) {
 	struct pgpPkt pkt;
 	if (p < pend) {
-	    if (decodePkt(p, (pend - p), &pkt))
+	    if (decodePkt(p, (pend - p), &pkt)) {
+		rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;
 		break;
-	    if (pkt.tag == PGPTAG_PUBLIC_KEY)
+	    }
+	    if (pkt.tag == PGPTAG_PUBLIC_KEY) {
+		rc = RPMPGP_ERROR_BAD_PUBKEY_STRUCTURE;
 		break;	/* start of another public key, error out */
+	    }
 	} else {
 	    pkt.tag = 0;
 	}
@@ -938,62 +1031,76 @@ static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams 
 	    break;	/* all packets processed */
 
 	/* subkeys must be followed by at least one binding signature which we need to verify */
-	if (prevtag == PGPTAG_PUBLIC_SUBKEY && pkt.tag != PGPTAG_SIGNATURE)
+	if (prevtag == PGPTAG_PUBLIC_SUBKEY && pkt.tag != PGPTAG_SIGNATURE) {
+	    rc = RPMPGP_ERROR_BAD_PUBKEY_STRUCTURE;
 	    break;
+	}
 
 	if (pkt.tag == PGPTAG_SIGNATURE) {
 	    int needsig = 0;
 	    int isselfsig;
 	    sigdigp = pgpDigParamsNew(pkt.tag);
 	    /* use the NoMPI variant because we want to ignore non self-sigs */
-	    if (pgpPrtSigNoMPI(pkt.tag, pkt.body, pkt.blen, sigdigp))
+	    if ((rc = pgpPrtSigNoMPI(pkt.tag, pkt.body, pkt.blen, sigdigp)) != RPMPGP_OK)
 		break;
 
-	    if (prevtag == PGPTAG_PUBLIC_SUBKEY && sigdigp->sigtype != PGPSIGTYPE_SUBKEY_BINDING && sigdigp->sigtype != PGPSIGTYPE_SUBKEY_REVOKE)
+	    if (prevtag == PGPTAG_PUBLIC_SUBKEY && sigdigp->sigtype != PGPSIGTYPE_SUBKEY_BINDING && sigdigp->sigtype != PGPSIGTYPE_SUBKEY_REVOKE) {
+		rc = RPMPGP_ERROR_BAD_PUBKEY_STRUCTURE;
 		break;			/* a subkey paket must be followed by a binding signature */
+	    }
 
 	    isselfsig = is_self_signature(digp, sigdigp);
 	    /* if this is self-signed add MPIs so we can verify */
 	    if (isselfsig) {
-	        if (pgpPrtSigParams(pkt.tag, pkt.body, pkt.blen, sigdigp))
+	        if ((rc = pgpPrtSigParams(pkt.tag, pkt.body, pkt.blen, sigdigp)) != RPMPGP_OK)
 		    break;
 	    }
 
 	    if (sigdigp->sigtype == PGPSIGTYPE_SUBKEY_BINDING || sigdigp->sigtype == PGPSIGTYPE_SUBKEY_REVOKE) {
-		if (!subkeypkt)
+		if (!subkeypkt) {
+		    rc = RPMPGP_ERROR_BAD_PUBKEY_STRUCTURE;
 		    break;		/* signature in wrong section */
-		if (!isselfsig)
+		}
+		if (!isselfsig) {
+		    rc = RPMPGP_ERROR_BAD_PUBKEY_STRUCTURE;
 		    break;		/* the binding signature must be a self signature */
-		if (pgpVerifySelf(digp, sigdigp, &mainpkt, &sectionpkt))
+		}
+		if ((rc = pgpVerifySelf(digp, sigdigp, &mainpkt, &sectionpkt)) != RPMPGP_OK)
 		    break;		/* verification failed */
 		needsig = 1;
 	    }
 
 	    if (sigdigp->sigtype == PGPSIGTYPE_KEY_REVOKE) {
 		/* sections don't matter here */
-		if (!isselfsig)
+		if (!isselfsig) {
+		    rc = RPMPGP_ERROR_BAD_PUBKEY_STRUCTURE;
 		    break;		/* the binding signature must be a self signature */
-		if (pgpVerifySelf(digp, sigdigp, &mainpkt, NULL))
+		}
+		if ((rc = pgpVerifySelf(digp, sigdigp, &mainpkt, NULL)) != RPMPGP_OK)
 		    break;		/* verification failed */
 		digp->revoked = 1;				/* this is final */
 		digp->saved |= PGPDIG_SAVED_VALID;		/* we have at least one correct self-sig */
 	    }
 
 	    if (sigdigp->sigtype == PGPSIGTYPE_SIGNED_KEY) {
-		if (subkeypkt || useridpkt)
+		if (subkeypkt || useridpkt) {
+		    rc = RPMPGP_ERROR_BAD_PUBKEY_STRUCTURE;
 		    break;		/* signature in wrong section */
+		}
 		if (isselfsig) {
-		    if (pgpVerifySelf(digp, sigdigp, &mainpkt, NULL))
+		    if ((rc = pgpVerifySelf(digp, sigdigp, &mainpkt, NULL)) != RPMPGP_OK)
 			break;		/* verification failed */
 		    needsig = 1;
 		}
 	    }
 
 	    if (sigdigp->sigtype == PGPSIGTYPE_GENERIC_CERT || sigdigp->sigtype == PGPSIGTYPE_PERSONA_CERT || sigdigp->sigtype == PGPSIGTYPE_CASUAL_CERT || sigdigp->sigtype == PGPSIGTYPE_POSITIVE_CERT || sigdigp->sigtype == PGPSIGTYPE_CERT_REVOKE) {
-		if (!useridpkt)
+		if (!useridpkt) {
+		    rc = RPMPGP_ERROR_BAD_PUBKEY_STRUCTURE;
 		    break;		/* signature in wrong section */
+		}
 		if (sectionpkt.tag == PGPTAG_USER_ID && isselfsig) {
-		    if (pgpVerifySelf(digp, sigdigp, &mainpkt, &sectionpkt))
+		    if ((rc = pgpVerifySelf(digp, sigdigp, &mainpkt, &sectionpkt)) != RPMPGP_OK)
 			break;		/* verification failed */
 		    needsig = 1;
 		    /* note that cert revokations may get overwritten by newer certifications (like in gnupg) */
@@ -1007,8 +1114,10 @@ static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams 
 	    }
 	    sigdigp = pgpDigParamsFree(sigdigp);
 	} else if (pkt.tag == PGPTAG_USER_ID || pkt.tag == PGPTAG_PHOTOID) {
-	    if (subkeypkt)
+	    if (subkeypkt) {
+		rc = RPMPGP_ERROR_BAD_PUBKEY_STRUCTURE;
 		break;		/* no user id packets after subkeys allowed */
+	    }
 	    /* we delay the user id package parsing until we have verified the binding signature */
 	    useridpkt = 1;
 	    sectionpkt = pkt;
@@ -1017,78 +1126,28 @@ static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams 
 	    useridpkt = 0;
 	    sectionpkt = pkt;
 	} else if (pkt.tag == PGPTAG_RESERVED) {
+	    rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;
 	    break;		/* not allowed */
 	}
 	prevtag = pkt.tag;
 	p += (pkt.body - pkt.head) + pkt.blen;
     }
-    rc = ((p == pend) && prevtag != PGPTAG_PUBLIC_SUBKEY) ? 0 : -1;
-
+    if (rc == RPMPGP_OK && p != pend)
+	rc = RPMPGP_ERROR_INTERNAL;
+    if (rc == RPMPGP_OK && prevtag == PGPTAG_PUBLIC_SUBKEY)
+	rc = RPMPGP_ERROR_BAD_PUBKEY_STRUCTURE;
     sigdigp = pgpDigParamsFree(sigdigp);
     newest_digp = pgpDigParamsFree(newest_digp);
-    if (ret && rc == 0) {
+    if (ret && rc == RPMPGP_OK) {
 	*ret = digp;
     } else {
+	if (lints)
+	    add_error_lint(digp, rc, lints);
 	pgpDigParamsFree(digp);
     }
-    return rc;
+    return rc == RPMPGP_OK ? 0 : -1;
 }
 	
-int pgpPrtParams(const uint8_t * pkts, size_t pktlen, unsigned int pkttype,
-		 pgpDigParams * ret)
-{
-    pgpDigParams digp = NULL;
-    int rc = -1;	/* assume failure */
-    struct pgpPkt pkt;
-
-    if (pktlen > RPM_MAX_OPENPGP_BYTES)
-	return rc;	/* reject absurdly large data */
-    if (decodePkt(pkts, pktlen, &pkt))
-	return rc;
-
-    if (pkttype && pkt.tag != pkttype)
-	return rc;
-
-    if (pkt.tag == PGPTAG_PUBLIC_KEY)
-	return pgpPrtParamsPubkey(pkts, pktlen, ret);	/* switch to specialized pubkey implementation */
-
-    digp = pgpDigParamsNew(pkt.tag);
-    if (pgpPrtPkt(&pkt, digp))
-	goto exit;
-    if ((pkt.body - pkt.head) + pkt.blen != pktlen)
-	goto exit;	/* trailing data is an error */
-    rc = 0;
-exit:
-    if (ret && rc == 0)
-	*ret = digp;
-    else
-	pgpDigParamsFree(digp);
-    return rc;
-}
-
-int pgpPrtParams2(const uint8_t * pkts, size_t pktlen, unsigned int pkttype,
-                  pgpDigParams * ret, char **lints)
-{
-    if (lints)
-        *lints = NULL;
-    return pgpPrtParams(pkts, pktlen, pkttype, ret);
-}
-
-static int verifyPrimaryBindingSig(struct pgpPkt *mainpkt, struct pgpPkt *subkeypkt, pgpDigParams subkeydig, pgpDigParams bindsigdig)
-{
-    pgpDigParams emb_digp = NULL;
-    int rc = -1;	/* assume failure */
-    if (!bindsigdig || !bindsigdig->embedded_sig)
-	return -1;
-    emb_digp = pgpDigParamsNew(PGPTAG_SIGNATURE);
-    if (pgpPrtSig(PGPTAG_SIGNATURE, bindsigdig->embedded_sig, bindsigdig->embedded_sig_len, emb_digp) == 0)
-	if (emb_digp->sigtype == PGPSIGTYPE_PRIMARY_BINDING)
-	    if (!pgpVerifySelf(subkeydig, emb_digp, mainpkt, subkeypkt))
-		rc = 0;
-    emb_digp = pgpDigParamsFree(emb_digp);
-    return rc;
-}
-
 /* Return the subkeys for a pubkey. Note that the code in pgpPrtParamsPubkey() already
  * made sure that the signatures are self-signatures and verified ok. */
 /* This is similar to gnupg's merge_selfsigs_subkey() function */
@@ -1107,7 +1166,7 @@ int pgpPrtParamsSubkeys(const uint8_t *pkts, size_t pktlen,
     int rc, i;
 
     if (decodePkt(p, (pend - p), &mainpkt) || mainpkt.tag != PGPTAG_PUBLIC_KEY)
-	return 1;	/* pubkey packet must come first */
+	return -1;	/* pubkey packet must come first */
     p += (mainpkt.body - mainpkt.head) + mainpkt.blen;
 
     memset(&subkeypkt, 0, sizeof(subkeypkt));
@@ -1163,7 +1222,7 @@ int pgpPrtParamsSubkeys(const uint8_t *pkts, size_t pktlen,
 	} else if (pkt.tag == PGPTAG_SIGNATURE && subdigp != NULL) {
 	    sigdigp = pgpDigParamsNew(pkt.tag);
 	    /* we use the NoMPI variant because we do not verify */
-	    if (pgpPrtSigNoMPI(pkt.tag, pkt.body, pkt.blen, sigdigp)) {
+	    if (pgpPrtSigNoMPI(pkt.tag, pkt.body, pkt.blen, sigdigp) != RPMPGP_OK) {
 		sigdigp = pgpDigParamsFree(sigdigp);
 	    }
 	    if (sigdigp && sigdigp->sigtype == PGPSIGTYPE_SUBKEY_REVOKE) {
@@ -1173,7 +1232,7 @@ int pgpPrtParamsSubkeys(const uint8_t *pkts, size_t pktlen,
 	    } else if (sigdigp && sigdigp->sigtype == PGPSIGTYPE_SUBKEY_BINDING) {
 		int key_flags = (sigdigp->saved & PGPDIG_SAVED_KEY_FLAGS) ? sigdigp->key_flags : 0;
 		/* insist on a embedded primary key binding signature if this is used for signing */
-		if (!(key_flags & 0x02) || !verifyPrimaryBindingSig(&mainpkt, &subkeypkt, subdigp, sigdigp)) {
+		if (!(key_flags & 0x02) || verifyPrimaryBindingSig(&mainpkt, &subkeypkt, subdigp, sigdigp) == RPMPGP_OK) {
 		    if (!newest_digp || sigdigp->time >= newest_digp->time) {
 			newest_digp = pgpDigParamsFree(newest_digp);
 			newest_digp = sigdigp;
@@ -1201,6 +1260,57 @@ int pgpPrtParamsSubkeys(const uint8_t *pkts, size_t pktlen,
     return rc;
 }
 
+int pgpPrtParams2(const uint8_t * pkts, size_t pktlen, unsigned int pkttype,
+		 pgpDigParams * ret, char **lints)
+{
+    pgpDigParams digp = NULL;
+    rpmpgpRC rc;
+    struct pgpPkt pkt;
+
+    if (lints)
+        *lints = NULL;
+    if (pktlen > RPM_MAX_OPENPGP_BYTES || decodePkt(pkts, pktlen, &pkt)) {
+	add_error_lint(NULL, RPMPGP_ERROR_CORRUPT_PGP_PACKET, lints);
+	return -1;
+    }
+
+    if (pkttype && pkt.tag != pkttype) {
+	add_error_lint(NULL, RPMPGP_ERROR_UNEXPECTED_PGP_PACKET, lints);
+	return -1;
+    }
+
+    if (pkt.tag == PGPTAG_PUBLIC_KEY)
+	return pgpPrtParamsPubkey(pkts, pktlen, ret, lints);	/* switch to specialized pubkey implementation */
+
+    digp = pgpDigParamsNew(pkt.tag);
+    rc = pgpPrtPkt(&pkt, digp);
+    if (rc == RPMPGP_OK && (pkt.body - pkt.head) + pkt.blen != pktlen)
+	rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET; 		/* trailing data is an error */
+
+    if (ret && rc == RPMPGP_OK)
+	*ret = digp;
+    else {
+	if (lints)
+	    add_error_lint(digp, rc, lints);
+	pgpDigParamsFree(digp);
+    }
+    return rc == RPMPGP_OK ? 0 : -1;
+}
+
+int pgpPrtParams(const uint8_t * pkts, size_t pktlen, unsigned int pkttype,
+                  pgpDigParams * ret)
+{
+    return pgpPrtParams2(pkts, pktlen, pkttype, ret, NULL);
+}
+
+rpmRC pgpPubKeyLint(const uint8_t *pkts, size_t pktslen, char **explanation)
+{
+    pgpDigParams digp = NULL;
+    rpmRC res = pgpPrtParamsPubkey(pkts, pktslen, &digp, explanation) ? RPMRC_FAIL : RPMRC_OK;
+    pgpDigParamsFree(digp);
+    return res;
+}
+
 static char *format_keyid(pgpKeyID_t keyid, char *userid)
 {
     char *keyidstr = rpmhex(keyid, sizeof(pgpKeyID_t));
@@ -1213,7 +1323,6 @@ static char *format_keyid(pgpKeyID_t keyid, char *userid)
 	return ret;
     }
 }
-
 
 static char *format_time(time_t *t)
 {
@@ -1230,7 +1339,7 @@ static char *format_time(time_t *t)
     return ret;
 }
 
-static void add_lint(pgpDigParams key, char **lints, const char *msg)
+static void add_key_lint(pgpDigParams key, char **lints, const char *msg)
 {
     char *keyid = format_keyid(key->signid, key->tag == PGPTAG_PUBLIC_SUBKEY ? NULL : key->userid);
     char *main_keyid = key->tag == PGPTAG_PUBLIC_SUBKEY ? format_keyid(key->mainid, key->userid) : NULL;
@@ -1247,13 +1356,13 @@ static void add_lint(pgpDigParams key, char **lints, const char *msg)
     free(main_keyid);
 }
 
-static void add_expired_lint(pgpDigParams key, char **lints)
+static void add_key_expired_lint(pgpDigParams key, char **lints)
 {
     time_t exptime = (time_t)key->time + key->key_expire;
     char *expdate = format_time(&exptime);
     char *msg = NULL;
     rasprintf(&msg, "expired on %s", expdate);
-    add_lint(key, lints, msg);
+    add_key_lint(key, lints, msg);
     free(msg);
     free(expdate);
 }
@@ -1317,23 +1426,23 @@ rpmRC pgpVerifySignature2(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx
     if (res == RPMRC_OK && key) {
 	if (key->revoked) {
 	    if (lints)
-		add_lint(key, lints, "has been revoked");
+		add_key_lint(key, lints, "has been revoked");
 	    res = RPMRC_NOTTRUSTED;
 	} else if ((key->saved & PGPDIG_SAVED_VALID) == 0) {
 	    if (lints)
-		add_lint(key, lints, "has no valid binding signature");
+		add_key_lint(key, lints, "has no valid binding signature");
 	    res = RPMRC_NOTTRUSTED;
 	} else if (key->tag == PGPTAG_PUBLIC_SUBKEY && ((key->saved & PGPDIG_SAVED_KEY_FLAGS) == 0 || (key->key_flags & 0x02) == 0)) {
 	    if (lints)
-		add_lint(key, lints, "is not suitable for signing");
+		add_key_lint(key, lints, "is not suitable for signing");
 	    res = RPMRC_NOTTRUSTED;	/* subkey not suitable for signing */
 	} else if (key->time > sig->time) {
 	    if (lints)
-		add_lint(key, lints, "has been created after the signature");
+		add_key_lint(key, lints, "has been created after the signature");
 	    res = RPMRC_NOTTRUSTED;
 	} else if ((key->saved & PGPDIG_SAVED_KEY_EXPIRE) != 0 && key->key_expire && key->key_expire < sig->time - key->time) {
 	    if (lints)
-		add_expired_lint(key, lints);
+		add_key_expired_lint(key, lints);
 	    res = RPMRC_NOTTRUSTED;
 	}
     }
@@ -1378,7 +1487,7 @@ int pgpPubkeyKeyID(const uint8_t * pkts, size_t pktslen, pgpKeyID_t keyid)
 
     if (decodePkt(pkts, pktslen, &pkt))
 	return -1;
-    return getKeyID(pkt.body, pkt.blen, keyid);
+    return getKeyID(pkt.body, pkt.blen, keyid) == RPMPGP_OK ? 0 : -1;
 }
 
 int pgpPubkeyFingerprint(const uint8_t * pkts, size_t pktslen,
@@ -1388,13 +1497,7 @@ int pgpPubkeyFingerprint(const uint8_t * pkts, size_t pktslen,
 
     if (decodePkt(pkts, pktslen, &pkt))
 	return -1;
-    return getPubkeyFingerprint(pkt.body, pkt.blen, fp, fplen);
+    return getPubkeyFingerprint(pkt.body, pkt.blen, fp, fplen) == RPMPGP_OK ? 0 : -1;
 }
 
-
-rpmRC pgpPubKeyLint(const uint8_t *pkts, size_t pktslen, char **explanation)
-{
-    *explanation = NULL;
-    return RPMRC_OK;
-}
 
