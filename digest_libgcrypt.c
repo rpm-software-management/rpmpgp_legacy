@@ -80,15 +80,14 @@ static int pgpVerifySigRSA(pgpDigAlg pgpkey, pgpDigAlg pgpsig, uint8_t *hash, si
     struct pgpDigKeyRSA_s *key = pgpkey->data;
     struct pgpDigSigRSA_s *sig = pgpsig->data;
     gcry_sexp_t sexp_sig = NULL, sexp_data = NULL, sexp_pkey = NULL;
-    const char *hash_algo_name;
+    int gcry_hash_algo = hashalgo2gcryalgo(hash_algo);
     int rc = 1;
 
-    if (!sig || !key)
+    if (!sig || !key || !gcry_hash_algo)
 	return rc;
 
-    hash_algo_name = gcry_md_algo_name(hashalgo2gcryalgo(hash_algo));
     gcry_sexp_build(&sexp_sig, NULL, "(sig-val (rsa (s %M)))", sig->s);
-    gcry_sexp_build(&sexp_data, NULL, "(data (flags pkcs1) (hash %s %b))", hash_algo_name, (int)hashlen, (const char *)hash);
+    gcry_sexp_build(&sexp_data, NULL, "(data (flags pkcs1) (hash %s %b))", gcry_md_algo_name(gcry_hash_algo), (int)hashlen, (const char *)hash);
     gcry_sexp_build(&sexp_pkey, NULL, "(public-key (rsa (n %M) (e %M)))", key->n, key->e);
     if (sexp_sig && sexp_data && sexp_pkey)
 	rc = gcry_pk_verify(sexp_sig, sexp_data, sexp_pkey) == 0 ? 0 : 1;
