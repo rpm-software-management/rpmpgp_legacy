@@ -519,6 +519,34 @@ static rpmpgpRC pgpPrtKeyParams(pgpTag tag, const uint8_t *h, size_t hlen,
     return rc;
 }
 
+/* validate that the mpi data matches our expectations */
+static rpmpgpRC pgpValidateKeyParamsSize(int pubkey_algo, const uint8_t *p, size_t plen) {
+    rpmpgpRC rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;		/* assume failure */
+    int nmpis = -1;
+
+    switch (pubkey_algo) {
+	case PGPPUBKEYALGO_ECDSA:
+	case PGPPUBKEYALGO_EDDSA:
+	    if (!plen || p[0] == 0x00 || p[0] == 0xff || plen < 1 + p[0])
+		return rc;
+	    plen -= 1 + p[0];
+	    p += 1 + p[0];
+	    nmpis = 1;
+	    break;
+	case PGPPUBKEYALGO_RSA:
+	    nmpis = 2;
+	    break;
+	case PGPPUBKEYALGO_DSA:
+	    nmpis = 4;
+	    break;
+	default:
+	    break;
+    }
+    if (nmpis < 0)
+	return rc;
+    return processMpis(nmpis, NULL, p, p + plen);
+}
+
 static rpmpgpRC pgpPrtKey(pgpTag tag, const uint8_t *h, size_t hlen,
 		     pgpDigParams _digp)
 {
@@ -573,8 +601,6 @@ static rpmpgpRC getPubkeyFingerprint(const uint8_t *h, size_t hlen,
 			  uint8_t **fp, size_t *fplen)
 {
     rpmpgpRC rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;		/* assume failure */
-    const uint8_t *se;
-    const uint8_t *pend = h + hlen;
     uint8_t version = 0;
 
     if (pgpVersion(h, hlen, &version))
@@ -583,35 +609,11 @@ static rpmpgpRC getPubkeyFingerprint(const uint8_t *h, size_t hlen,
     /* We only permit V4 keys, V3 keys are long long since deprecated */
     switch (version) {
     case 4:
-      {	pgpPktKeyV4 v = (pgpPktKeyV4) (h);
-	int mpis = -1;
-
-	/* Packet must be strictly larger than v to have room for the
-	 * required MPIs and (for EdDSA) the curve ID */
-	if (hlen < sizeof(*v) + sizeof(uint8_t))
+      {	pgpPktKeyV4 v = (pgpPktKeyV4)h;
+	if (hlen < sizeof(*v))
 	    return rc;
-	se = (uint8_t *)(v + 1);
-	switch (v->pubkey_algo) {
-	case PGPPUBKEYALGO_ECDSA:
-	case PGPPUBKEYALGO_EDDSA:
-	    /* ECC has a curve id before the MPIs */
-	    if (se[0] == 0x00 || se[0] == 0xff || pend - se < 1 + se[0])
-		return rc;
-	    se += 1 + se[0];
-	    mpis = 1;
-	    break;
-	case PGPPUBKEYALGO_RSA:
-	    mpis = 2;
-	    break;
-	case PGPPUBKEYALGO_DSA:
-	    mpis = 4;
-	    break;
-	default:
-	    return RPMPGP_ERROR_UNSUPPORTED_ALGORITHM;
-	}
-
 	/* Does the size and number of MPI's match our expectations? */
-	if (processMpis(mpis, NULL, se, pend) == RPMPGP_OK) {
+	if (pgpValidateKeyParamsSize(v->pubkey_algo, (uint8_t *)(v + 1), hlen - sizeof(*v)) == RPMPGP_OK) {
 	    DIGEST_CTX ctx = rpmDigestInit(RPM_HASH_SHA1, RPMDIGEST_NONE);
 	    uint8_t *d = NULL;
 	    size_t dlen = 0;
@@ -629,7 +631,6 @@ static rpmpgpRC getPubkeyFingerprint(const uint8_t *h, size_t hlen,
 		free(d);
 	    }
 	}
-
       }	break;
     default:
 	rc = RPMPGP_ERROR_UNSUPPORTED_VERSION;
@@ -644,7 +645,7 @@ static rpmpgpRC getKeyID(const uint8_t *h, size_t hlen, pgpKeyID_t keyid)
     size_t fplen = 0;
     rpmpgpRC rc = getPubkeyFingerprint(h, hlen, &fp, &fplen);
     if (rc == RPMPGP_OK && fp && fplen > 8)
-	memcpy(keyid, (fp + (fplen-8)), 8);
+	memcpy(keyid, (fp + (fplen - 8)), 8);
     else if (rc == RPMPGP_OK)
 	rc = RPMPGP_ERROR_INTERNAL;
     free(fp);
@@ -865,7 +866,7 @@ static rpmpgpRC verifyPrimaryBindingSig(struct pgpPkt *mainpkt, struct pgpPkt *s
 
 static const size_t RPM_MAX_OPENPGP_BYTES = 65535; /* max number of bytes in a key */
 
-static int is_self_signature(pgpDigParams digp, pgpDigParams sigdigp)
+static int is_same_keyid(pgpDigParams digp, pgpDigParams sigdigp)
 {
     return (digp->saved & sigdigp->saved & PGPDIG_SAVED_ID) != 0 &&
 	memcmp(digp->signid, sigdigp->signid, sizeof(digp->signid)) == 0;
@@ -919,7 +920,7 @@ static void add_error_lint(pgpDigParams digp, rpmpgpRC error, char **lints)
 	msg = "Pubkey self-signature verification failure";
 	break;
     case RPMPGP_ERROR_MISSING_SELFSIG:
-	msg = "Pubkey is missing a self-signature";
+	msg = "Pubkey misses a self-signature";
 	break;
     case RPMPGP_ERROR_UNSUPPORTED_VERSION:
 	msg = "Unsupported packet version";
@@ -949,11 +950,10 @@ static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams 
     pgpDigParams newest_digp = NULL;
     int useridpkt, subkeypkt;
     rpmpgpRC rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;		/* assume failure */
-    int prevtag = 0;
     uint32_t key_expire_sig_time = 0;
     uint32_t key_flags_sig_time = 0;
     struct pgpPkt mainpkt, sectionpkt;
-
+    int haveselfsig;
 
     if (lints)
 	*lints = NULL;
@@ -980,10 +980,13 @@ static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams 
 
     useridpkt = subkeypkt = 0;		/* type of the section packet */
     memset(&sectionpkt, 0, sizeof(sectionpkt));
+    haveselfsig = 1;
 
     rc = RPMPGP_OK;
     while (rc == RPMPGP_OK) {
 	struct pgpPkt pkt;
+	int end_of_section;
+
 	if (p < pend) {
 	    if (decodePkt(p, (pend - p), &pkt)) {
 		rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;
@@ -997,12 +1000,17 @@ static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams 
 	    pkt.tag = 0;
 	}
 
-	/* did we end a direct/userid/subkey section? if yes take the data from the newest signature */
-	if ((p == pend || pkt.tag == PGPTAG_USER_ID || pkt.tag == PGPTAG_PHOTOID || pkt.tag == PGPTAG_PUBLIC_SUBKEY) && newest_digp) {
+	end_of_section = p == pend || pkt.tag == PGPTAG_USER_ID || pkt.tag == PGPTAG_PHOTOID || pkt.tag == PGPTAG_PUBLIC_SUBKEY;
+	/* did we end a direct/userid/subkey section? if yes, make sure there is a self sig and take the data from the newest signature */
+	if (end_of_section && !haveselfsig) {
+	    rc = RPMPGP_ERROR_MISSING_SELFSIG;
+	    break;
+	}
+	if (end_of_section && newest_digp) {
 	    if (newest_digp->sigtype == PGPSIGTYPE_CERT_REVOKE)
 		newest_digp->saved &= ~(PGPDIG_SAVED_KEY_EXPIRE | PGPDIG_SAVED_KEY_FLAGS);	/* just in case */
 	    else if (!subkeypkt)
-		digp->saved |= PGPDIG_SAVED_VALID;		/* we have at least one self-sig */
+		digp->saved |= PGPDIG_SAVED_VALID;		/* we have at least one good self-sig */
 	    /* commit the data from the newest signature */
 	    if (!subkeypkt && (newest_digp->saved & PGPDIG_SAVED_KEY_EXPIRE)) {
 		if ((!key_expire_sig_time || newest_digp->time > key_expire_sig_time)) {
@@ -1036,12 +1044,6 @@ static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams 
 	if (p == pend)
 	    break;	/* all packets processed */
 
-	/* subkeys must be followed by at least one binding signature which we need to verify */
-	if (prevtag == PGPTAG_PUBLIC_SUBKEY && pkt.tag != PGPTAG_SIGNATURE) {
-	    rc = RPMPGP_ERROR_BAD_PUBKEY_STRUCTURE;
-	    break;
-	}
-
 	if (pkt.tag == PGPTAG_SIGNATURE) {
 	    int needsig = 0;
 	    int isselfsig;
@@ -1050,12 +1052,7 @@ static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams 
 	    if ((rc = pgpPrtSigNoMPI(pkt.tag, pkt.body, pkt.blen, sigdigp)) != RPMPGP_OK)
 		break;
 
-	    if (prevtag == PGPTAG_PUBLIC_SUBKEY && sigdigp->sigtype != PGPSIGTYPE_SUBKEY_BINDING && sigdigp->sigtype != PGPSIGTYPE_SUBKEY_REVOKE) {
-		rc = RPMPGP_ERROR_BAD_PUBKEY_STRUCTURE;
-		break;			/* a subkey paket must be followed by a binding signature */
-	    }
-
-	    isselfsig = is_self_signature(digp, sigdigp);
+	    isselfsig = is_same_keyid(digp, sigdigp);
 	    /* if this is self-signed add MPIs so we can verify */
 	    if (isselfsig) {
 	        if ((rc = pgpPrtSigParams(pkt.tag, pkt.body, pkt.blen, sigdigp)) != RPMPGP_OK)
@@ -1073,6 +1070,7 @@ static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams 
 		}
 		if ((rc = pgpVerifySelf(digp, sigdigp, &mainpkt, &sectionpkt)) != RPMPGP_OK)
 		    break;		/* verification failed */
+		haveselfsig = 1;
 		needsig = 1;
 	    }
 
@@ -1105,9 +1103,10 @@ static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams 
 		    rc = RPMPGP_ERROR_BAD_PUBKEY_STRUCTURE;
 		    break;		/* signature in wrong section */
 		}
-		if (sectionpkt.tag == PGPTAG_USER_ID && isselfsig) {
+		if (isselfsig && sectionpkt.tag == PGPTAG_USER_ID) {
 		    if ((rc = pgpVerifySelf(digp, sigdigp, &mainpkt, &sectionpkt)) != RPMPGP_OK)
 			break;		/* verification failed */
+		    haveselfsig = 1;
 		    needsig = 1;
 		    /* note that cert revokations may get overwritten by newer certifications (like in gnupg) */
 		}
@@ -1124,24 +1123,22 @@ static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams 
 		rc = RPMPGP_ERROR_BAD_PUBKEY_STRUCTURE;
 		break;		/* no user id packets after subkeys allowed */
 	    }
-	    /* we delay the user id package parsing until we have verified the binding signature */
 	    useridpkt = 1;
 	    sectionpkt = pkt;
+	    haveselfsig = pkt.tag == PGPTAG_PHOTOID ? 1 : 0;	/* ignore photo ids with no self-sig */
 	} else if (pkt.tag == PGPTAG_PUBLIC_SUBKEY) {
 	    subkeypkt = 1;
 	    useridpkt = 0;
 	    sectionpkt = pkt;
+	    haveselfsig = 0;
 	} else if (pkt.tag == PGPTAG_RESERVED) {
 	    rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;
 	    break;		/* not allowed */
 	}
-	prevtag = pkt.tag;
 	p += (pkt.body - pkt.head) + pkt.blen;
     }
     if (rc == RPMPGP_OK && p != pend)
 	rc = RPMPGP_ERROR_INTERNAL;
-    if (rc == RPMPGP_OK && prevtag == PGPTAG_PUBLIC_SUBKEY)
-	rc = RPMPGP_ERROR_BAD_PUBKEY_STRUCTURE;
     sigdigp = pgpDigParamsFree(sigdigp);
     newest_digp = pgpDigParamsFree(newest_digp);
     if (ret && rc == RPMPGP_OK) {
