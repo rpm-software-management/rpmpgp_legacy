@@ -37,10 +37,9 @@ struct pgpDigKeyRSA_s {
     gcry_mpi_t e;
 };
 
-static int pgpSetSigMpiRSA(pgpDigAlg pgpsig, int num, const uint8_t *p)
+static int pgpSetSigMpiRSA(pgpDigAlg pgpsig, int num, const uint8_t *p, int mlen)
 {
     struct pgpDigSigRSA_s *sig = pgpsig->data;
-    int mlen = pgpMpiLen(p);
     int rc = 1;
 
     if (!sig)
@@ -55,10 +54,9 @@ static int pgpSetSigMpiRSA(pgpDigAlg pgpsig, int num, const uint8_t *p)
     return rc;
 }
 
-static int pgpSetKeyMpiRSA(pgpDigAlg pgpkey, int num, const uint8_t *p)
+static int pgpSetKeyMpiRSA(pgpDigAlg pgpkey, int num, const uint8_t *p, int mlen)
 {
     struct pgpDigKeyRSA_s *key = pgpkey->data;
-    int mlen = pgpMpiLen(p);
     int rc = 1;
 
     if (!key)
@@ -134,10 +132,9 @@ struct pgpDigKeyDSA_s {
     gcry_mpi_t y;
 };
 
-static int pgpSetSigMpiDSA(pgpDigAlg pgpsig, int num, const uint8_t *p)
+static int pgpSetSigMpiDSA(pgpDigAlg pgpsig, int num, const uint8_t *p, int mlen)
 {
     struct pgpDigSigDSA_s *sig = pgpsig->data;
-    int mlen = pgpMpiLen(p);
     int rc = 1;
 
     if (!sig)
@@ -156,10 +153,9 @@ static int pgpSetSigMpiDSA(pgpDigAlg pgpsig, int num, const uint8_t *p)
     return rc;
 }
 
-static int pgpSetKeyMpiDSA(pgpDigAlg pgpkey, int num, const uint8_t *p)
+static int pgpSetKeyMpiDSA(pgpDigAlg pgpkey, int num, const uint8_t *p, int mlen)
 {
     struct pgpDigKeyDSA_s *key = pgpkey->data;
-    int mlen = pgpMpiLen(p);
     int rc = 1;
 
     if (!key)
@@ -247,10 +243,9 @@ struct pgpDigKeyECC_s {
     gcry_mpi_t q;
 };
 
-static int pgpSetSigMpiECC(pgpDigAlg pgpsig, int num, const uint8_t *p)
+static int pgpSetSigMpiECC(pgpDigAlg pgpsig, int num, const uint8_t *p, int mlen)
 {
     struct pgpDigSigECC_s *sig = pgpsig->data;
-    int mlen = pgpMpiLen(p);
     int rc = 1;
 
     if (!sig)
@@ -269,10 +264,9 @@ static int pgpSetSigMpiECC(pgpDigAlg pgpsig, int num, const uint8_t *p)
     return rc;
 }
 
-static int pgpSetKeyMpiECC(pgpDigAlg pgpkey, int num, const uint8_t *p)
+static int pgpSetKeyMpiECC(pgpDigAlg pgpkey, int num, const uint8_t *p, int mlen)
 {
     struct pgpDigKeyECC_s *key = pgpkey->data;
-    int mlen = pgpMpiLen(p);
     int rc = 1;
 
     if (!key)
@@ -362,7 +356,7 @@ static void pgpFreeKeyECC(pgpDigAlg pgpkey)
 
 /****************************** NULL **************************************/
 
-static int pgpSetMpiNULL(pgpDigAlg pgpkey, int num, const uint8_t *p)
+static int pgpSetMpiNULL(pgpDigAlg pgpkey, int num, const uint8_t *p, int mlen)
 {
     return 1;
 }

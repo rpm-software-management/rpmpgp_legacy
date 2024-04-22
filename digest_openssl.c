@@ -134,9 +134,8 @@ exit:
 #endif
 }
 
-static int pgpSetKeyMpiRSA(pgpDigAlg pgpkey, int num, const uint8_t *p)
+static int pgpSetKeyMpiRSA(pgpDigAlg pgpkey, int num, const uint8_t *p, int mlen)
 {
-    size_t mlen = pgpMpiLen(p) - 2;
     struct pgpDigKeyRSA_s *key = pgpkey->data;
 
     if (!key)
@@ -149,10 +148,10 @@ static int pgpSetKeyMpiRSA(pgpDigAlg pgpkey, int num, const uint8_t *p)
         /* Modulus */
         if (key->n)
             return 1;	/* This should only ever happen once per key */
-	key->nbytes = mlen;
+	key->nbytes = mlen - 2;
         /* Create a BIGNUM from the pointer.
            Note: this assumes big-endian data as required by PGP */
-        key->n = BN_bin2bn(p+2, mlen, NULL);
+        key->n = BN_bin2bn(p + 2, mlen - 2, NULL);
         if (!key->n) return 1;
         break;
 
@@ -162,7 +161,7 @@ static int pgpSetKeyMpiRSA(pgpDigAlg pgpkey, int num, const uint8_t *p)
             return 1;	/* This should only ever happen once per key */
         /* Create a BIGNUM from the pointer.
            Note: this assumes big-endian data as required by PGP */
-        key->e = BN_bin2bn(p+2, mlen, NULL);
+        key->e = BN_bin2bn(p + 2, mlen - 2, NULL);
         if (!key->e) return 1;
         break;
     }
@@ -192,20 +191,17 @@ static void pgpFreeKeyRSA(pgpDigAlg pgpkey)
 
 struct pgpDigSigRSA_s {
     BIGNUM *bn;
-    size_t len;
 };
 
-static int pgpSetSigMpiRSA(pgpDigAlg pgpsig, int num, const uint8_t *p)
+static int pgpSetSigMpiRSA(pgpDigAlg pgpsig, int num, const uint8_t *p, int mlen)
 {
     BIGNUM *bn = NULL;
 
-    int mlen = pgpMpiLen(p) - 2;
     int rc = 1;
 
     struct pgpDigSigRSA_s *sig = pgpsig->data;
-    if (!sig) {
-        sig = xcalloc(1, sizeof(*sig));
-    }
+    if (!sig)
+        sig = pgpsig->data = xcalloc(1, sizeof(*sig));
 
     switch (num) {
     case 0:
@@ -222,13 +218,11 @@ static int pgpSetSigMpiRSA(pgpDigAlg pgpsig, int num, const uint8_t *p)
            This will be useful later, as we can
            retrieve this value with appropriate
            padding. */
-        bn = BN_bin2bn(p+2, mlen, bn);
+        bn = BN_bin2bn(p + 2, mlen - 2, bn);
         if (!bn) return 1;
 
         sig->bn = bn;
-        sig->len = mlen;
 
-        pgpsig->data = sig;
         rc = 0;
         break;
     }
@@ -352,10 +346,9 @@ exit:
 }
 
 
-static int pgpSetKeyMpiDSA(pgpDigAlg pgpkey, int num, const uint8_t *p)
+static int pgpSetKeyMpiDSA(pgpDigAlg pgpkey, int num, const uint8_t *p, int mlen)
 {
     BIGNUM *bn;
-    size_t mlen = pgpMpiLen(p) - 2;
     struct pgpDigKeyDSA_s *key = pgpkey->data;
 
     if (!key) {
@@ -366,7 +359,7 @@ static int pgpSetKeyMpiDSA(pgpDigAlg pgpkey, int num, const uint8_t *p)
        Note: this assumes big-endian data as required
        by the PGP multiprecision integer format
        (RFC4880, Section 3.2) */
-    bn = BN_bin2bn(p+2, mlen, NULL);
+    bn = BN_bin2bn(p + 2, mlen - 2, NULL);
     if (!bn) return 1;
 
     switch (num) {
@@ -460,30 +453,27 @@ static unsigned char *constructDSASignature(unsigned char *r, int rlen, unsigned
     return buf;
 }
 
-static int pgpSetSigMpiDSA(pgpDigAlg pgpsig, int num, const uint8_t *p)
+static int pgpSetSigMpiDSA(pgpDigAlg pgpsig, int num, const uint8_t *p, int mlen)
 {
-    int mlen = pgpMpiLen(p) - 2;
     int rc = 1;
 
     struct pgpDigSigDSA_s *sig = pgpsig->data;
-    if (!sig) {
-        sig = xcalloc(1, sizeof(*sig));
-	pgpsig->data = sig;
-    }
+    if (!sig)
+        sig = pgpsig->data = xcalloc(1, sizeof(*sig));
 
     switch (num) {
     case 0:
         if (sig->r)
             return 1;	/* This should only ever happen once per signature */
-	sig->rlen = mlen;
-        sig->r = memcpy(xmalloc(mlen), p + 2, mlen);
+        sig->rlen = mlen - 2;
+        sig->r = memcpy(xmalloc(mlen - 2), p + 2, mlen - 2);
         rc = 0;
         break;
     case 1:
         if (sig->s)
             return 1;	/* This should only ever happen once per signature */
-	sig->slen = mlen;
-        sig->s = memcpy(xmalloc(mlen), p + 2, mlen);
+        sig->slen = mlen - 2;
+        sig->s = memcpy(xmalloc(mlen - 2), p + 2, mlen - 2);
         rc = 0;
         break;
     }
@@ -600,18 +590,16 @@ exit:
 #endif
 }
 
-static int pgpSetKeyMpiECDSA(pgpDigAlg pgpkey, int num, const uint8_t *p)
+static int pgpSetKeyMpiECDSA(pgpDigAlg pgpkey, int num, const uint8_t *p, int mlen)
 {
-    size_t mlen = pgpMpiLen(p) - 2;
     struct pgpDigKeyECDSA_s *key = pgpkey->data;
     int rc = 1;
 
     if (!key)
 	key = pgpkey->data = xcalloc(1, sizeof(*key));
-    if (num == 0 && !key->q && mlen > 1 && p[2] == 0x04) {
-	key->qlen = mlen;
-	key->q = xmalloc(key->qlen);
-	memcpy(key->q, p + 2, key->qlen),
+    if (num == 0 && !key->q && mlen > 3 && p[2] == 0x04) {
+	key->qlen = mlen - 2;
+	key->q = memcpy(xmalloc(mlen - 2), p + 2, mlen - 2);
 	rc = 0;
     }
     return rc;
@@ -636,30 +624,27 @@ struct pgpDigSigECDSA_s {
     int slen;
 };
 
-static int pgpSetSigMpiECDSA(pgpDigAlg pgpsig, int num, const uint8_t *p)
+static int pgpSetSigMpiECDSA(pgpDigAlg pgpsig, int num, const uint8_t *p, int mlen)
 {
-    int mlen = pgpMpiLen(p) - 2;
     int rc = 1;
 
     struct pgpDigSigECDSA_s *sig = pgpsig->data;
-    if (!sig) {
-        sig = xcalloc(1, sizeof(*sig));
-	pgpsig->data = sig;
-    }
+    if (!sig)
+        sig = pgpsig->data = xcalloc(1, sizeof(*sig));
 
     switch (num) {
     case 0:
         if (sig->r)
             return 1;	/* This should only ever happen once per signature */
-	sig->rlen = mlen;
-        sig->r = memcpy(xmalloc(mlen), p + 2, mlen);
+	sig->rlen = mlen - 2;
+        sig->r = memcpy(xmalloc(mlen), p + 2, mlen - 2);
         rc = 0;
         break;
     case 1:
         if (sig->s)
             return 1;	/* This should only ever happen once per signature */
-	sig->slen = mlen;
-        sig->s = memcpy(xmalloc(mlen), p + 2, mlen);
+	sig->slen = mlen - 2;
+        sig->s = memcpy(xmalloc(mlen), p + 2, mlen - 2);
         rc = 0;
         break;
     }
@@ -733,18 +718,16 @@ static int constructEDDSASigningKey(struct pgpDigKeyEDDSA_s *key, int curve)
     return key->evp_pkey ? 1 : 0;
 }
 
-static int pgpSetKeyMpiEDDSA(pgpDigAlg pgpkey, int num, const uint8_t *p)
+static int pgpSetKeyMpiEDDSA(pgpDigAlg pgpkey, int num, const uint8_t *p, int mlen)
 {
-    size_t mlen = pgpMpiLen(p) - 2;
     struct pgpDigKeyEDDSA_s *key = pgpkey->data;
     int rc = 1;
 
     if (!key)
 	key = pgpkey->data = xcalloc(1, sizeof(*key));
-    if (num == 0 && !key->q && mlen > 1 && p[2] == 0x40) {
-	key->qlen = mlen - 1;
-	key->q = xmalloc(key->qlen);
-	memcpy(key->q, p + 3, key->qlen),
+    if (num == 0 && !key->q && mlen > 3 && p[2] == 0x40) {
+	key->qlen = mlen - 3;
+	key->q = memcpy(xmalloc(key->qlen), p + 3, key->qlen);		/* we do not copy the leading 0x40 */
 	rc = 0;
     }
     return rc;
@@ -766,14 +749,14 @@ struct pgpDigSigEDDSA_s {
     unsigned char sig[32 + 32];
 };
 
-static int pgpSetSigMpiEDDSA(pgpDigAlg pgpsig, int num, const uint8_t *p)
+static int pgpSetSigMpiEDDSA(pgpDigAlg pgpsig, int num, const uint8_t *p, int mlen)
 {
     struct pgpDigSigEDDSA_s *sig = pgpsig->data;
-    int mlen = pgpMpiLen(p) - 2;
 
     if (!sig)
 	sig = pgpsig->data = xcalloc(1, sizeof(*sig));
-    if (!mlen || mlen > 32 || (num != 0 && num != 1))
+    mlen -= 2;	/* skip mpi len */
+    if (mlen <= 0 || mlen > 32 || (num != 0 && num != 1))
 	return 1;
     memcpy(sig->sig + 32 * num + 32 - mlen, p + 2, mlen);
     return 0;
@@ -813,7 +796,7 @@ done:
 
 /****************************** NULL **************************************/
 
-static int pgpSetMpiNULL(pgpDigAlg pgpkey, int num, const uint8_t *p)
+static int pgpSetMpiNULL(pgpDigAlg pgpkey, int num, const uint8_t *p, int mlen)
 {
     return 1;
 }

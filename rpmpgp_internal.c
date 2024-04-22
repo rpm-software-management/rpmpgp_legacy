@@ -333,16 +333,22 @@ static pgpDigAlg pgpDigAlgFree(pgpDigAlg alg)
     return NULL;
 }
 
+static inline int pgpMpiLen(const uint8_t *p)
+{
+    int mpi_bits = (p[0] << 8) | p[1];
+    return 2 + ((mpi_bits + 7) >> 3);
+}
+
 static rpmpgpRC processMpis(const int mpis, pgpDigAlg alg,
 		       const uint8_t *p, const uint8_t *const pend)
 {
     rpmpgpRC rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;		/* assume failure */
     int i = 0;
     for (; i < mpis && pend - p >= 2; i++) {
-	unsigned int mpil = pgpMpiLen(p);
-	if (pend - p < mpil)
+	int mpil = pgpMpiLen(p);
+	if (mpil < 2 || pend - p < mpil)
 	    return rc;
-	if (alg && alg->setmpi(alg, i, p))
+	if (alg && alg->setmpi(alg, i, p, mpil))
 	    return rc;
 	p += mpil;
     }
