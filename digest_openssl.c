@@ -556,6 +556,13 @@ static int constructECDSASigningKey(struct pgpDigKeyECDSA_s *key, int curve)
 	    OSSL_PARAM_END
 	};
 	key->evp_pkey = construct_pkey_from_param(EVP_PKEY_EC, params);
+    } else if (curve == PGPCURVE_NIST_P_521) {
+	OSSL_PARAM params[] = {
+	    OSSL_PARAM_utf8_string("group", "P-521", 5),
+	    OSSL_PARAM_octet_string("pub", key->q, key->qlen),
+	    OSSL_PARAM_END
+	};
+	key->evp_pkey = construct_pkey_from_param(EVP_PKEY_EC, params);
     }
     return key->evp_pkey ? 1 : 0;
 #else
@@ -565,6 +572,8 @@ static int constructECDSASigningKey(struct pgpDigKeyECDSA_s *key, int curve)
 	ec = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
     else if (curve == PGPCURVE_NIST_P_384)
 	ec = EC_KEY_new_by_curve_name(NID_secp384r1);
+    else if (curve == PGPCURVE_NIST_P_521)
+	ec = EC_KEY_new_by_curve_name(NID_secp521r1);
     if (!ec)
 	return 0;
 
@@ -816,6 +825,8 @@ static int pgpSupportedCurve(int algo, int curve)
     if (algo == PGPPUBKEYALGO_ECDSA && curve == PGPCURVE_NIST_P_256)
 	return 1;
     if (algo == PGPPUBKEYALGO_ECDSA && curve == PGPCURVE_NIST_P_384)
+	return 1;
+    if (algo == PGPPUBKEYALGO_ECDSA && curve == PGPCURVE_NIST_P_521)
 	return 1;
     return 0;
 }

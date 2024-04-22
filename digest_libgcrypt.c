@@ -317,13 +317,15 @@ static int pgpVerifySigECC(pgpDigAlg pgpkey, pgpDigAlg pgpsig, uint8_t *hash, si
 	gcry_sexp_release(sexp_pkey);
 	return rc;
     }
-    if (pgpkey->curve == PGPCURVE_NIST_P_256 || pgpkey->curve == PGPCURVE_NIST_P_384) {
+    if (pgpkey->curve == PGPCURVE_NIST_P_256 || pgpkey->curve == PGPCURVE_NIST_P_384 || pgpkey->curve == PGPCURVE_NIST_P_521) {
 	gcry_sexp_build(&sexp_sig, NULL, "(sig-val (ecdsa (r %M) (s %M)))", sig->r, sig->s);
 	gcry_sexp_build(&sexp_data, NULL, "(data (value %b))", (int)hashlen, (const char *)hash);
 	if (pgpkey->curve == PGPCURVE_NIST_P_256)
 	    gcry_sexp_build(&sexp_pkey, NULL, "(public-key (ecc (curve \"NIST P-256\") (q %M)))", key->q);
 	else if (pgpkey->curve == PGPCURVE_NIST_P_384)
 	    gcry_sexp_build(&sexp_pkey, NULL, "(public-key (ecc (curve \"NIST P-384\") (q %M)))", key->q);
+	else if (pgpkey->curve == PGPCURVE_NIST_P_521)
+	    gcry_sexp_build(&sexp_pkey, NULL, "(public-key (ecc (curve \"NIST P-521\") (q %M)))", key->q);
 	if (sexp_sig && sexp_data && sexp_pkey)
 	    rc = gcry_pk_verify(sexp_sig, sexp_data, sexp_pkey) == 0 ? 0 : 1;
 	gcry_sexp_release(sexp_sig);
@@ -384,6 +386,8 @@ static int pgpSupportedCurve(int algo, int curve)
     if (algo == PGPPUBKEYALGO_ECDSA && curve == PGPCURVE_NIST_P_256)
 	return 1;
     if (algo == PGPPUBKEYALGO_ECDSA && curve == PGPCURVE_NIST_P_384)
+	return 1;
+    if (algo == PGPPUBKEYALGO_ECDSA && curve == PGPCURVE_NIST_P_521)
 	return 1;
     return 0;
 }
