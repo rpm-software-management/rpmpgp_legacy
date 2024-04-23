@@ -16,13 +16,16 @@ typedef enum rpmpgpRC_e {
     RPMPGP_ERROR_UNKNOWN_CRITICAL_PKT	= 18,
     RPMPGP_ERROR_BAD_PUBKEY_STRUCTURE	= 19,
     RPMPGP_ERROR_MISSING_SELFSIG	= 20,
-    RPMPGP_ERROR_SELFSIG_VERIFICATION	= 21
+    RPMPGP_ERROR_SELFSIG_VERIFICATION	= 21,
+    RPMPGP_ERROR_SIGNATURE_VERIFICATION	= 22,
+    RPMPGP_ERROR_BAD_PUBKEY		= 23,
+    RPMPGP_ERROR_BAD_SIGNATURE		= 24
 } rpmpgpRC;
 
 typedef struct pgpDigAlg_s * pgpDigAlg;
 
-typedef int (*setmpifunc)(pgpDigAlg digp, int num, const uint8_t *p, int mlen);
-typedef int (*verifyfunc)(pgpDigAlg pgpkey, pgpDigAlg pgpsig,
+typedef rpmpgpRC (*setmpifunc)(pgpDigAlg digp, int num, const uint8_t *p, int mlen);
+typedef rpmpgpRC (*verifyfunc)(pgpDigAlg pgpkey, pgpDigAlg pgpsig,
                           uint8_t *hash, size_t hashlen, int hash_algo);
 typedef void (*freefunc)(pgpDigAlg digp);
 

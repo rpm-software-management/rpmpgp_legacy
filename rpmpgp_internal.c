@@ -552,8 +552,9 @@ static rpmpgpRC pgpPrtKey(pgpTag tag, const uint8_t *h, size_t hlen,
 {
     rpmpgpRC rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;		/* assume failure */
 
-    if (_digp->version || _digp->saved || (_digp->tag != PGPTAG_PUBLIC_KEY &&
-		_digp->tag != PGPTAG_PUBLIC_SUBKEY))
+    if (_digp->version || _digp->saved)
+	return RPMPGP_ERROR_INTERNAL;
+    if  (_digp->tag != PGPTAG_PUBLIC_KEY && _digp->tag != PGPTAG_PUBLIC_SUBKEY)
 	return RPMPGP_ERROR_INTERNAL;
 
     if (pgpVersion(h, hlen, &_digp->version))
@@ -675,6 +676,61 @@ static rpmpgpRC pgpPrtPkt(struct pgpPkt *p, pgpDigParams _digp)
     return rc;
 }
 
+static rpmpgpRC pgpVerifySignatureRaw(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx)
+{
+    DIGEST_CTX ctx;
+    uint8_t *hash = NULL;
+    size_t hashlen = 0;
+    rpmpgpRC rc = RPMPGP_ERROR_SIGNATURE_VERIFICATION; /* assume failure */
+
+    /* make sure the parameters are correct */
+    if (sig == NULL || hashctx == NULL)
+	return RPMPGP_ERROR_INTERNAL;
+    if (sig->tag != PGPTAG_SIGNATURE)
+	return RPMPGP_ERROR_INTERNAL;
+    if (key && key->tag != PGPTAG_PUBLIC_KEY && key->tag != PGPTAG_PUBLIC_SUBKEY)
+	return RPMPGP_ERROR_INTERNAL;
+
+    ctx = rpmDigestDup(hashctx);
+    if (sig->hash != NULL)
+	rpmDigestUpdate(ctx, sig->hash, sig->hashlen);
+
+    if (sig->version == 4) {
+	/* V4 trailer is six octets long (rfc4880) */
+	uint8_t trailer[6];
+	uint32_t nb = sig->hashlen;
+	nb = htonl(nb);
+	trailer[0] = sig->version;
+	trailer[1] = 0xff;
+	memcpy(trailer+2, &nb, 4);
+	rpmDigestUpdate(ctx, trailer, sizeof(trailer));
+    }
+
+    rpmDigestFinal(ctx, (void **)&hash, &hashlen, 0);
+    ctx = NULL;
+
+    /* Compare leading 16 bits of digest for quick check. */
+    if (hash == NULL || memcmp(hash, sig->signhash16, 2) != 0)
+	goto exit;
+
+    /*
+     * If we have a key, verify the signature for real. Otherwise we've
+     * done all we can.
+     */
+    if (key) {
+	pgpDigAlg sa = sig->alg;
+	pgpDigAlg ka = key->alg;
+	if (sa && ka && sa->verify && sig->pubkey_algo == key->pubkey_algo)
+	    rc = sa->verify(ka, sa, hash, hashlen, sig->hash_algo);
+    } else {
+	rc = RPMPGP_OK;
+    }
+exit:
+    free(hash);
+    rpmDigestFinal(ctx, NULL, NULL, 0);
+    return rc;
+}
+
 pgpDigParams pgpDigParamsFree(pgpDigParams digp)
 {
     if (digp) {
@@ -688,7 +744,7 @@ pgpDigParams pgpDigParamsFree(pgpDigParams digp)
     return NULL;
 }
 
-/* compare data of two signatures */
+/* compare data of two signatures or keys */
 int pgpDigParamsCmp(pgpDigParams p1, pgpDigParams p2)
 {
     int rc = 1; /* assume different, eg if either is NULL */
@@ -802,8 +858,6 @@ static rpmpgpRC hashUserID(DIGEST_CTX hash, const struct pgpPkt *pkt)
     return rc;
 }
 
-#define PGPSIGTYPE_PRIMARY_BINDING (25)
-
 static rpmpgpRC pgpVerifySelf(pgpDigParams key, pgpDigParams selfsig,
 			const struct pgpPkt *mainpkt, const struct pgpPkt *sectionpkt)
 {
@@ -841,8 +895,11 @@ static rpmpgpRC pgpVerifySelf(pgpDigParams key, pgpDigParams selfsig,
     }
 
     if (rc == RPMPGP_OK) {
-	rpmRC rc2 = pgpVerifySignature(key, selfsig, hash);
-	if (rc2 != RPMRC_OK && rc2 != RPMRC_NOTTRUSTED)	/* to be expected when validating the self sigs */
+	if (key)
+	    rc = pgpVerifySignatureRaw(key, selfsig, hash);
+	else
+	    rc = RPMPGP_ERROR_INTERNAL;
+	if (rc == RPMPGP_ERROR_SIGNATURE_VERIFICATION)
 	    rc = RPMPGP_ERROR_SELFSIG_VERIFICATION;
     }
     rpmDigestFinal(hash, NULL, NULL, 0);
@@ -930,6 +987,15 @@ static void add_error_lint(pgpDigParams digp, rpmpgpRC error, char **lints)
 	break;
     case RPMPGP_ERROR_UNSUPPORTED_CURVE:
 	msg = "Unsupported pubkey curve";
+	break;
+    case RPMPGP_ERROR_SIGNATURE_VERIFICATION:
+	msg = "Signature verification failure";
+	break;
+    case RPMPGP_ERROR_BAD_PUBKEY:
+	msg = "Pubkey was not accepted by crypto backend";
+	break;
+    case RPMPGP_ERROR_BAD_SIGNATURE:
+	msg = "Signature was not accepted by crypto backend";
 	break;
     default:
 	rasprintf(lints, "Unknown error (%d)", error);
@@ -1373,86 +1439,43 @@ static void add_key_expired_lint(pgpDigParams key, char **lints)
 
 rpmRC pgpVerifySignature2(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx, char **lints)
 {
-    DIGEST_CTX ctx = rpmDigestDup(hashctx);
-    uint8_t *hash = NULL;
-    size_t hashlen = 0;
     rpmRC res = RPMRC_FAIL; /* assume failure */
+    rpmpgpRC rc;
 
     if (lints)
         *lints = NULL;
-    if (sig == NULL || ctx == NULL)
+    
+    rc = pgpVerifySignatureRaw(key, sig, hashctx);
+    if (rc != RPMPGP_OK)
 	goto exit;
-
-    /* make sure the dig param types are correct */
-    if (sig->tag != PGPTAG_SIGNATURE)
-	goto exit;
-    if (key && key->tag != PGPTAG_PUBLIC_KEY && key->tag != PGPTAG_PUBLIC_SUBKEY)
-	goto exit;
-
-    if (sig->hash != NULL)
-	rpmDigestUpdate(ctx, sig->hash, sig->hashlen);
-
-    if (sig->version == 4) {
-	/* V4 trailer is six octets long (rfc4880) */
-	uint8_t trailer[6];
-	uint32_t nb = sig->hashlen;
-	nb = htonl(nb);
-	trailer[0] = sig->version;
-	trailer[1] = 0xff;
-	memcpy(trailer+2, &nb, 4);
-	rpmDigestUpdate(ctx, trailer, sizeof(trailer));
-    }
-
-    rpmDigestFinal(ctx, (void **)&hash, &hashlen, 0);
-    ctx = NULL;
-
-    /* Compare leading 16 bits of digest for quick check. */
-    if (hash == NULL || memcmp(hash, sig->signhash16, 2) != 0)
-	goto exit;
-
-    /*
-     * If we have a key, verify the signature for real. Otherwise we've
-     * done all we can, return NOKEY to indicate "looks okay but dunno."
-     */
-    if (key && key->alg) {
-	pgpDigAlg sa = sig->alg;
-	pgpDigAlg ka = key->alg;
-	if (sa && sa->verify && sig->pubkey_algo == key->pubkey_algo) {
-	    if (sa->verify(ka, sa, hash, hashlen, sig->hash_algo) == 0) {
-		res = RPMRC_OK;
-	    }
-	}
-    } else {
+    if (!key) {
+	/* that's all we can do */
 	res = RPMRC_NOKEY;
+	goto exit;
     }
-
-    if (res == RPMRC_OK && key) {
-	if (key->revoked) {
-	    if (lints)
-		add_key_lint(key, lints, "has been revoked");
-	    res = RPMRC_NOTTRUSTED;
-	} else if ((key->saved & PGPDIG_SAVED_VALID) == 0) {
-	    if (lints)
-		add_key_lint(key, lints, "has no valid binding signature");
-	    res = RPMRC_NOTTRUSTED;
-	} else if (key->tag == PGPTAG_PUBLIC_SUBKEY && ((key->saved & PGPDIG_SAVED_KEY_FLAGS) == 0 || (key->key_flags & 0x02) == 0)) {
-	    if (lints)
-		add_key_lint(key, lints, "is not suitable for signing");
-	    res = RPMRC_NOTTRUSTED;	/* subkey not suitable for signing */
-	} else if (key->time > sig->time) {
-	    if (lints)
-		add_key_lint(key, lints, "has been created after the signature");
-	    res = RPMRC_NOTTRUSTED;
-	} else if ((key->saved & PGPDIG_SAVED_KEY_EXPIRE) != 0 && key->key_expire && key->key_expire < sig->time - key->time) {
-	    if (lints)
-		add_key_expired_lint(key, lints);
-	    res = RPMRC_NOTTRUSTED;
-	}
+    /* now check the meta information of the key */
+    if (key->revoked) {
+	if (lints)
+	    add_key_lint(key, lints, "has been revoked");
+	res = RPMRC_NOTTRUSTED;
+    } else if ((key->saved & PGPDIG_SAVED_VALID) == 0) {
+	if (lints)
+	    add_key_lint(key, lints, "has no valid binding signature");
+	res = RPMRC_NOTTRUSTED;
+    } else if (key->tag == PGPTAG_PUBLIC_SUBKEY && ((key->saved & PGPDIG_SAVED_KEY_FLAGS) == 0 || (key->key_flags & 0x02) == 0)) {
+	if (lints)
+	    add_key_lint(key, lints, "is not suitable for signing");
+	res = RPMRC_NOTTRUSTED;	/* subkey not suitable for signing */
+    } else if (key->time > sig->time) {
+	if (lints)
+	    add_key_lint(key, lints, "has been created after the signature");
+	res = RPMRC_NOTTRUSTED;
+    } else if ((key->saved & PGPDIG_SAVED_KEY_EXPIRE) != 0 && key->key_expire && key->key_expire < sig->time - key->time) {
+	if (lints)
+	    add_key_expired_lint(key, lints);
+	res = RPMRC_NOTTRUSTED;
     }
-
 exit:
-    free(hash);
-    rpmDigestFinal(ctx, NULL, NULL, 0);
     return res;
 }
 

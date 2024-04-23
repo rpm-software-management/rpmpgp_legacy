@@ -134,14 +134,16 @@ exit:
 #endif
 }
 
-static int pgpSetKeyMpiRSA(pgpDigAlg pgpkey, int num, const uint8_t *p, int mlen)
+static rpmpgpRC pgpSetKeyMpiRSA(pgpDigAlg pgpkey, int num, const uint8_t *p, int mlen)
 {
+    rpmpgpRC rc = RPMPGP_ERROR_BAD_PUBKEY;	/* assume failure */
     struct pgpDigKeyRSA_s *key = pgpkey->data;
 
     if (!key)
         key = pgpkey->data = xcalloc(1, sizeof(*key));
-    else if (key->evp_pkey)
-	return 1;
+
+    if (key->evp_pkey)
+	return rc;
 
     switch (num) {
     case 0:
@@ -152,7 +154,8 @@ static int pgpSetKeyMpiRSA(pgpDigAlg pgpkey, int num, const uint8_t *p, int mlen
         /* Create a BIGNUM from the pointer.
            Note: this assumes big-endian data as required by PGP */
         key->n = BN_bin2bn(p + 2, mlen - 2, NULL);
-        if (!key->n) return 1;
+        if (key->n)
+	    rc = RPMPGP_OK;
         break;
 
     case 1:
@@ -162,11 +165,12 @@ static int pgpSetKeyMpiRSA(pgpDigAlg pgpkey, int num, const uint8_t *p, int mlen
         /* Create a BIGNUM from the pointer.
            Note: this assumes big-endian data as required by PGP */
         key->e = BN_bin2bn(p + 2, mlen - 2, NULL);
-        if (!key->e) return 1;
+        if (key->e)
+	    rc = RPMPGP_OK;
         break;
     }
 
-    return 0;
+    return rc;
 }
 
 static void pgpFreeKeyRSA(pgpDigAlg pgpkey)
@@ -193,24 +197,18 @@ struct pgpDigSigRSA_s {
     BIGNUM *bn;
 };
 
-static int pgpSetSigMpiRSA(pgpDigAlg pgpsig, int num, const uint8_t *p, int mlen)
+static rpmpgpRC pgpSetSigMpiRSA(pgpDigAlg pgpsig, int num, const uint8_t *p, int mlen)
 {
-    BIGNUM *bn = NULL;
-
-    int rc = 1;
-
+    rpmpgpRC rc = RPMPGP_ERROR_BAD_SIGNATURE;	/* assume failure */
     struct pgpDigSigRSA_s *sig = pgpsig->data;
+
     if (!sig)
         sig = pgpsig->data = xcalloc(1, sizeof(*sig));
 
     switch (num) {
     case 0:
         if (sig->bn)
-            return 1;	/* This should only ever happen once per signature */
-
-        bn = sig->bn = BN_new();
-        if (!bn) return 1;
-
+            return rc;	/* This should only ever happen once per signature */
         /* Create a BIGNUM from the signature pointer.
            Note: this assumes big-endian data as required
            by the PGP multiprecision integer format
@@ -218,12 +216,9 @@ static int pgpSetSigMpiRSA(pgpDigAlg pgpsig, int num, const uint8_t *p, int mlen
            This will be useful later, as we can
            retrieve this value with appropriate
            padding. */
-        bn = BN_bin2bn(p + 2, mlen - 2, bn);
-        if (!bn) return 1;
-
-        sig->bn = bn;
-
-        rc = 0;
+        sig->bn = BN_bin2bn(p + 2, mlen - 2, NULL);
+        if (sig->bn)
+	    rc = RPMPGP_OK;
         break;
     }
     return rc;
@@ -238,19 +233,19 @@ static void pgpFreeSigRSA(pgpDigAlg pgpsig)
     }
 }
 
-static int pgpVerifySigRSA(pgpDigAlg pgpkey, pgpDigAlg pgpsig,
+static rpmpgpRC pgpVerifySigRSA(pgpDigAlg pgpkey, pgpDigAlg pgpsig,
                            uint8_t *hash, size_t hashlen, int hash_algo)
 {
-    int rc = 1; /* assume failure */
-    EVP_PKEY_CTX *pkey_ctx = NULL;
+    rpmpgpRC rc = RPMPGP_ERROR_SIGNATURE_VERIFICATION;	/* assume failure */
     struct pgpDigSigRSA_s *sig = pgpsig->data;
-
+    struct pgpDigKeyRSA_s *key = pgpkey->data;
+    EVP_PKEY_CTX *pkey_ctx = NULL;
     void *padded_sig = NULL;
 
-    struct pgpDigKeyRSA_s *key = pgpkey->data;
-
-    if (!constructRSASigningKey(key))
+    if (!constructRSASigningKey(key)) {
+        rc = RPMPGP_ERROR_BAD_PUBKEY;
         goto done;
+    }
 
     pkey_ctx = EVP_PKEY_CTX_new(key->evp_pkey, NULL);
     if (!pkey_ctx)
@@ -271,10 +266,7 @@ static int pgpVerifySigRSA(pgpDigAlg pgpkey, pgpDigAlg pgpsig,
         goto done;
 
     if (EVP_PKEY_verify(pkey_ctx, padded_sig, pkey_len, hash, hashlen) == 1)
-    {
-        /* Success */
-        rc = 0;
-    }
+        rc = RPMPGP_OK;		/* Success */
 
 done:
     if (pkey_ctx)
@@ -346,50 +338,49 @@ exit:
 }
 
 
-static int pgpSetKeyMpiDSA(pgpDigAlg pgpkey, int num, const uint8_t *p, int mlen)
+static rpmpgpRC pgpSetKeyMpiDSA(pgpDigAlg pgpkey, int num, const uint8_t *p, int mlen)
 {
-    BIGNUM *bn;
+    rpmpgpRC rc = RPMPGP_ERROR_BAD_PUBKEY;	/* assume failure */
     struct pgpDigKeyDSA_s *key = pgpkey->data;
 
-    if (!key) {
+    if (!key)
         key = pgpkey->data = xcalloc(1, sizeof(*key));
-    }
-
-    /* Create a BIGNUM from the key pointer.
-       Note: this assumes big-endian data as required
-       by the PGP multiprecision integer format
-       (RFC4880, Section 3.2) */
-    bn = BN_bin2bn(p + 2, mlen - 2, NULL);
-    if (!bn) return 1;
 
     switch (num) {
     case 0:
         /* Prime */
         if (key->p)
-            return 1;	/* This should only ever happen once per key */
-        key->p = bn;
+            return rc;	/* This should only ever happen once per key */
+        key->p = BN_bin2bn(p + 2, mlen - 2, NULL);
+	if (key->p)
+	    rc = RPMPGP_OK;
         break;
     case 1:
         /* Subprime */
         if (key->q)
-            return 1;	/* This should only ever happen once per key */
-        key->q = bn;
+            return rc;	/* This should only ever happen once per key */
+        key->q = BN_bin2bn(p + 2, mlen - 2, NULL);
+	if (key->q)
+	    rc = RPMPGP_OK;
         break;
     case 2:
         /* Base */
         if (key->g)
-            return 1;	/* This should only ever happen once per key */
-        key->g = bn;
+            return rc;	/* This should only ever happen once per key */
+        key->g = BN_bin2bn(p + 2, mlen - 2, NULL);
+	if (key->g)
+	    rc = RPMPGP_OK;
         break;
     case 3:
         /* Public */
         if (key->y)
-            return 1;	/* This should only ever happen once per key */
-        key->y = bn;
+            return rc;	/* This should only ever happen once per key */
+        key->y = BN_bin2bn(p + 2, mlen - 2, NULL);
+	if (key->y)
+	    rc = RPMPGP_OK;
         break;
     }
-
-    return 0;
+    return rc;
 }
 
 static void pgpFreeKeyDSA(pgpDigAlg pgpkey)
@@ -433,6 +424,7 @@ static void add_asn1_tag(unsigned char *p, int tag, int len)
 }
 
 /* create the DER encoding of the SEQUENCE of two INTEGERs r and s */
+/* used by DSA and ECDSA */
 static unsigned char *constructDSASignature(unsigned char *r, int rlen, unsigned char *s, int slen, size_t *siglenp)
 {
     int len1 = rlen + (!rlen || (*r & 0x80) != 0 ? 1 : 0), hlen1 = len1 < 128 ? 2 : len1 < 256 ? 3 : 4;
@@ -453,28 +445,28 @@ static unsigned char *constructDSASignature(unsigned char *r, int rlen, unsigned
     return buf;
 }
 
-static int pgpSetSigMpiDSA(pgpDigAlg pgpsig, int num, const uint8_t *p, int mlen)
+static rpmpgpRC pgpSetSigMpiDSA(pgpDigAlg pgpsig, int num, const uint8_t *p, int mlen)
 {
-    int rc = 1;
-
+    rpmpgpRC rc = RPMPGP_ERROR_BAD_SIGNATURE;	/* assume failure */
     struct pgpDigSigDSA_s *sig = pgpsig->data;
+
     if (!sig)
         sig = pgpsig->data = xcalloc(1, sizeof(*sig));
 
     switch (num) {
     case 0:
         if (sig->r)
-            return 1;	/* This should only ever happen once per signature */
+            return rc;	/* This should only ever happen once per signature */
         sig->rlen = mlen - 2;
         sig->r = memcpy(xmalloc(mlen - 2), p + 2, mlen - 2);
-        rc = 0;
+        rc = RPMPGP_OK;
         break;
     case 1:
         if (sig->s)
-            return 1;	/* This should only ever happen once per signature */
+            return rc;	/* This should only ever happen once per signature */
         sig->slen = mlen - 2;
         sig->s = memcpy(xmalloc(mlen - 2), p + 2, mlen - 2);
-        rc = 0;
+        rc = RPMPGP_OK;
         break;
     }
 
@@ -491,18 +483,20 @@ static void pgpFreeSigDSA(pgpDigAlg pgpsig)
     free(pgpsig->data);
 }
 
-static int pgpVerifySigDSA(pgpDigAlg pgpkey, pgpDigAlg pgpsig,
+static rpmpgpRC pgpVerifySigDSA(pgpDigAlg pgpkey, pgpDigAlg pgpsig,
                            uint8_t *hash, size_t hashlen, int hash_algo)
 {
-    int rc = 1; /* assume failure */
+    rpmpgpRC rc = RPMPGP_ERROR_SIGNATURE_VERIFICATION;	/* assume failure */
     struct pgpDigSigDSA_s *sig = pgpsig->data;
     struct pgpDigKeyDSA_s *key = pgpkey->data;
     unsigned char *xsig = NULL;		/* signature encoded for X509 */
     size_t xsig_len = 0;
     EVP_PKEY_CTX *pkey_ctx = NULL;
 
-    if (!constructDSASigningKey(key))
+    if (!constructDSASigningKey(key)) {
+        rc = RPMPGP_ERROR_BAD_PUBKEY;
         goto done;
+    }
 
     xsig = constructDSASignature(sig->r, sig->rlen, sig->s, sig->slen, &xsig_len);
     if (!xsig)
@@ -516,10 +510,7 @@ static int pgpVerifySigDSA(pgpDigAlg pgpkey, pgpDigAlg pgpsig,
         goto done;
 
     if (EVP_PKEY_verify(pkey_ctx, xsig, xsig_len, hash, hashlen) == 1)
-    {
-        /* Success */
-        rc = 0;
-    }
+        rc = RPMPGP_OK;		/* Success */
 
 done:
     if (pkey_ctx)
@@ -599,17 +590,17 @@ exit:
 #endif
 }
 
-static int pgpSetKeyMpiECDSA(pgpDigAlg pgpkey, int num, const uint8_t *p, int mlen)
+static rpmpgpRC pgpSetKeyMpiECDSA(pgpDigAlg pgpkey, int num, const uint8_t *p, int mlen)
 {
     struct pgpDigKeyECDSA_s *key = pgpkey->data;
-    int rc = 1;
+    rpmpgpRC rc = RPMPGP_ERROR_BAD_PUBKEY;	/* assume failure */
 
     if (!key)
 	key = pgpkey->data = xcalloc(1, sizeof(*key));
     if (num == 0 && !key->q && mlen > 3 && p[2] == 0x04) {
 	key->qlen = mlen - 2;
 	key->q = memcpy(xmalloc(mlen - 2), p + 2, mlen - 2);
-	rc = 0;
+	rc = RPMPGP_OK;
     }
     return rc;
 }
@@ -633,28 +624,28 @@ struct pgpDigSigECDSA_s {
     int slen;
 };
 
-static int pgpSetSigMpiECDSA(pgpDigAlg pgpsig, int num, const uint8_t *p, int mlen)
+static rpmpgpRC pgpSetSigMpiECDSA(pgpDigAlg pgpsig, int num, const uint8_t *p, int mlen)
 {
-    int rc = 1;
-
+    rpmpgpRC rc = RPMPGP_ERROR_BAD_SIGNATURE;	/* assume failure */
     struct pgpDigSigECDSA_s *sig = pgpsig->data;
+
     if (!sig)
         sig = pgpsig->data = xcalloc(1, sizeof(*sig));
 
     switch (num) {
     case 0:
         if (sig->r)
-            return 1;	/* This should only ever happen once per signature */
+            return rc;	/* This should only ever happen once per signature */
 	sig->rlen = mlen - 2;
         sig->r = memcpy(xmalloc(mlen), p + 2, mlen - 2);
-        rc = 0;
+        rc = RPMPGP_OK;
         break;
     case 1:
         if (sig->s)
             return 1;	/* This should only ever happen once per signature */
 	sig->slen = mlen - 2;
         sig->s = memcpy(xmalloc(mlen), p + 2, mlen - 2);
-        rc = 0;
+        rc = RPMPGP_OK;
         break;
     }
 
@@ -671,18 +662,20 @@ static void pgpFreeSigECDSA(pgpDigAlg pgpsig)
     free(pgpsig->data);
 }
 
-static int pgpVerifySigECDSA(pgpDigAlg pgpkey, pgpDigAlg pgpsig,
+static rpmpgpRC pgpVerifySigECDSA(pgpDigAlg pgpkey, pgpDigAlg pgpsig,
                            uint8_t *hash, size_t hashlen, int hash_algo)
 {
-    int rc = 1; /* assume failure */
+    rpmpgpRC rc = RPMPGP_ERROR_SIGNATURE_VERIFICATION;	/* assume failure */
     struct pgpDigSigECDSA_s *sig = pgpsig->data;
     struct pgpDigKeyECDSA_s *key = pgpkey->data;
     unsigned char *xsig = NULL;		/* signature encoded for X509 */
     size_t xsig_len = 0;
     EVP_PKEY_CTX *pkey_ctx = NULL;
 
-    if (!constructECDSASigningKey(key, pgpkey->curve))
+    if (!constructECDSASigningKey(key, pgpkey->curve)) {
+	rc = RPMPGP_ERROR_BAD_PUBKEY;
         goto done;
+    }
 
     xsig = constructDSASignature(sig->r, sig->rlen, sig->s, sig->slen, &xsig_len);
     if (!xsig)
@@ -696,10 +689,7 @@ static int pgpVerifySigECDSA(pgpDigAlg pgpkey, pgpDigAlg pgpsig,
         goto done;
 
     if (EVP_PKEY_verify(pkey_ctx, xsig, xsig_len, hash, hashlen) == 1)
-    {
-        /* Success */
-        rc = 0;
-    }
+        rc = RPMPGP_OK;		/* Success */
 
 done:
     if (pkey_ctx)
@@ -727,17 +717,17 @@ static int constructEDDSASigningKey(struct pgpDigKeyEDDSA_s *key, int curve)
     return key->evp_pkey ? 1 : 0;
 }
 
-static int pgpSetKeyMpiEDDSA(pgpDigAlg pgpkey, int num, const uint8_t *p, int mlen)
+static rpmpgpRC pgpSetKeyMpiEDDSA(pgpDigAlg pgpkey, int num, const uint8_t *p, int mlen)
 {
     struct pgpDigKeyEDDSA_s *key = pgpkey->data;
-    int rc = 1;
+    rpmpgpRC rc = RPMPGP_ERROR_BAD_PUBKEY;
 
     if (!key)
 	key = pgpkey->data = xcalloc(1, sizeof(*key));
     if (num == 0 && !key->q && mlen > 3 && p[2] == 0x40) {
 	key->qlen = mlen - 3;
 	key->q = memcpy(xmalloc(key->qlen), p + 3, key->qlen);		/* we do not copy the leading 0x40 */
-	rc = 0;
+	rc = RPMPGP_OK;
     }
     return rc;
 }
@@ -758,17 +748,18 @@ struct pgpDigSigEDDSA_s {
     unsigned char sig[32 + 32];
 };
 
-static int pgpSetSigMpiEDDSA(pgpDigAlg pgpsig, int num, const uint8_t *p, int mlen)
+static rpmpgpRC pgpSetSigMpiEDDSA(pgpDigAlg pgpsig, int num, const uint8_t *p, int mlen)
 {
+    rpmpgpRC rc = RPMPGP_ERROR_BAD_SIGNATURE;	/* assume failure */
     struct pgpDigSigEDDSA_s *sig = pgpsig->data;
 
     if (!sig)
 	sig = pgpsig->data = xcalloc(1, sizeof(*sig));
     mlen -= 2;	/* skip mpi len */
     if (mlen <= 0 || mlen > 32 || (num != 0 && num != 1))
-	return 1;
+	return rc;
     memcpy(sig->sig + 32 * num + 32 - mlen, p + 2, mlen);
-    return 0;
+    return RPMPGP_OK;
 }
 
 static void pgpFreeSigEDDSA(pgpDigAlg pgpsig)
@@ -779,21 +770,23 @@ static void pgpFreeSigEDDSA(pgpDigAlg pgpsig)
     }
 }
 
-static int pgpVerifySigEDDSA(pgpDigAlg pgpkey, pgpDigAlg pgpsig,
+static rpmpgpRC pgpVerifySigEDDSA(pgpDigAlg pgpkey, pgpDigAlg pgpsig,
                            uint8_t *hash, size_t hashlen, int hash_algo)
 {
-    int rc = 1;		/* assume failure */
+    rpmpgpRC rc = RPMPGP_ERROR_SIGNATURE_VERIFICATION;	/* assume failure */
     struct pgpDigSigEDDSA_s *sig = pgpsig->data;
     struct pgpDigKeyEDDSA_s *key = pgpkey->data;
     EVP_MD_CTX *md_ctx = NULL;
 
-    if (!constructEDDSASigningKey(key, pgpkey->curve))
+    if (!constructEDDSASigningKey(key, pgpkey->curve)) {
+	rc = RPMPGP_ERROR_BAD_PUBKEY;
 	goto done;
+    }
     md_ctx = EVP_MD_CTX_new();
     if (EVP_DigestVerifyInit(md_ctx, NULL, EVP_md_null(), NULL, key->evp_pkey) != 1)
 	goto done;
     if (EVP_DigestVerify(md_ctx, sig->sig, 64, hash, hashlen) == 1)
-	rc = 0;		/* Success */
+	rc = RPMPGP_OK;		/* Success */
 done:
     if (md_ctx)
 	EVP_MD_CTX_free(md_ctx);
@@ -805,15 +798,15 @@ done:
 
 /****************************** NULL **************************************/
 
-static int pgpSetMpiNULL(pgpDigAlg pgpkey, int num, const uint8_t *p, int mlen)
+static rpmpgpRC pgpSetMpiNULL(pgpDigAlg pgpkey, int num, const uint8_t *p, int mlen)
 {
-    return 1;
+    return RPMPGP_ERROR_UNSUPPORTED_ALGORITHM;
 }
 
-static int pgpVerifyNULL(pgpDigAlg pgpkey, pgpDigAlg pgpsig,
+static rpmpgpRC pgpVerifyNULL(pgpDigAlg pgpkey, pgpDigAlg pgpsig,
                          uint8_t *hash, size_t hashlen, int hash_algo)
 {
-    return 1;
+    return RPMPGP_ERROR_SIGNATURE_VERIFICATION;
 }
 
 static int pgpSupportedCurve(int algo, int curve)

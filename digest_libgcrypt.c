@@ -37,10 +37,10 @@ struct pgpDigKeyRSA_s {
     gcry_mpi_t e;
 };
 
-static int pgpSetSigMpiRSA(pgpDigAlg pgpsig, int num, const uint8_t *p, int mlen)
+static rpmpgpRC pgpSetSigMpiRSA(pgpDigAlg pgpsig, int num, const uint8_t *p, int mlen)
 {
     struct pgpDigSigRSA_s *sig = pgpsig->data;
-    int rc = 1;
+    rpmpgpRC rc = RPMPGP_ERROR_BAD_SIGNATURE;
 
     if (!sig)
 	sig = pgpsig->data = xcalloc(1, sizeof(*sig));
@@ -48,16 +48,16 @@ static int pgpSetSigMpiRSA(pgpDigAlg pgpsig, int num, const uint8_t *p, int mlen
     switch (num) {
     case 0:
 	if (!gcry_mpi_scan(&sig->s, GCRYMPI_FMT_PGP, p, mlen, NULL))
-	    rc = 0;
+	    rc = RPMPGP_OK;
 	break;
     }
     return rc;
 }
 
-static int pgpSetKeyMpiRSA(pgpDigAlg pgpkey, int num, const uint8_t *p, int mlen)
+static rpmpgpRC pgpSetKeyMpiRSA(pgpDigAlg pgpkey, int num, const uint8_t *p, int mlen)
 {
     struct pgpDigKeyRSA_s *key = pgpkey->data;
-    int rc = 1;
+    rpmpgpRC rc = RPMPGP_ERROR_BAD_PUBKEY;
 
     if (!key)
 	key = pgpkey->data = xcalloc(1, sizeof(*key));
@@ -65,23 +65,23 @@ static int pgpSetKeyMpiRSA(pgpDigAlg pgpkey, int num, const uint8_t *p, int mlen
     switch (num) {
     case 0:
 	if (!gcry_mpi_scan(&key->n, GCRYMPI_FMT_PGP, p, mlen, NULL))
-	    rc = 0;
+	    rc = RPMPGP_OK;
 	break;
     case 1:
 	if (!gcry_mpi_scan(&key->e, GCRYMPI_FMT_PGP, p, mlen, NULL))
-	    rc = 0;
+	    rc = RPMPGP_OK;
 	break;
     }
     return rc;
 }
 
-static int pgpVerifySigRSA(pgpDigAlg pgpkey, pgpDigAlg pgpsig, uint8_t *hash, size_t hashlen, int hash_algo)
+static rpmpgpRC pgpVerifySigRSA(pgpDigAlg pgpkey, pgpDigAlg pgpsig, uint8_t *hash, size_t hashlen, int hash_algo)
 {
     struct pgpDigKeyRSA_s *key = pgpkey->data;
     struct pgpDigSigRSA_s *sig = pgpsig->data;
     gcry_sexp_t sexp_sig = NULL, sexp_data = NULL, sexp_pkey = NULL;
     int gcry_hash_algo = hashalgo2gcryalgo(hash_algo);
-    int rc = 1;
+    rpmpgpRC rc = RPMPGP_ERROR_SIGNATURE_VERIFICATION;
 
     if (!sig || !key || !gcry_hash_algo)
 	return rc;
@@ -90,7 +90,8 @@ static int pgpVerifySigRSA(pgpDigAlg pgpkey, pgpDigAlg pgpsig, uint8_t *hash, si
     gcry_sexp_build(&sexp_data, NULL, "(data (flags pkcs1) (hash %s %b))", gcry_md_algo_name(gcry_hash_algo), (int)hashlen, (const char *)hash);
     gcry_sexp_build(&sexp_pkey, NULL, "(public-key (rsa (n %M) (e %M)))", key->n, key->e);
     if (sexp_sig && sexp_data && sexp_pkey)
-	rc = gcry_pk_verify(sexp_sig, sexp_data, sexp_pkey) == 0 ? 0 : 1;
+	if (gcry_pk_verify(sexp_sig, sexp_data, sexp_pkey) == 0)
+	    rc = RPMPGP_OK;
     gcry_sexp_release(sexp_sig);
     gcry_sexp_release(sexp_data);
     gcry_sexp_release(sexp_pkey);
@@ -131,10 +132,10 @@ struct pgpDigKeyDSA_s {
     gcry_mpi_t y;
 };
 
-static int pgpSetSigMpiDSA(pgpDigAlg pgpsig, int num, const uint8_t *p, int mlen)
+static rpmpgpRC pgpSetSigMpiDSA(pgpDigAlg pgpsig, int num, const uint8_t *p, int mlen)
 {
     struct pgpDigSigDSA_s *sig = pgpsig->data;
-    int rc = 1;
+    rpmpgpRC rc = RPMPGP_ERROR_BAD_SIGNATURE;
 
     if (!sig)
 	sig = pgpsig->data = xcalloc(1, sizeof(*sig));
@@ -142,20 +143,20 @@ static int pgpSetSigMpiDSA(pgpDigAlg pgpsig, int num, const uint8_t *p, int mlen
     switch (num) {
     case 0:
 	if (!gcry_mpi_scan(&sig->r, GCRYMPI_FMT_PGP, p, mlen, NULL))
-	    rc = 0;
+	    rc = RPMPGP_OK;
 	break;
     case 1:
 	if (!gcry_mpi_scan(&sig->s, GCRYMPI_FMT_PGP, p, mlen, NULL))
-	    rc = 0;
+	    rc = RPMPGP_OK;
 	break;
     }
     return rc;
 }
 
-static int pgpSetKeyMpiDSA(pgpDigAlg pgpkey, int num, const uint8_t *p, int mlen)
+static rpmpgpRC pgpSetKeyMpiDSA(pgpDigAlg pgpkey, int num, const uint8_t *p, int mlen)
 {
     struct pgpDigKeyDSA_s *key = pgpkey->data;
-    int rc = 1;
+    rpmpgpRC rc = RPMPGP_ERROR_BAD_PUBKEY;
 
     if (!key)
 	key = pgpkey->data = xcalloc(1, sizeof(*key));
@@ -163,30 +164,30 @@ static int pgpSetKeyMpiDSA(pgpDigAlg pgpkey, int num, const uint8_t *p, int mlen
     switch (num) {
     case 0:
 	if (!gcry_mpi_scan(&key->p, GCRYMPI_FMT_PGP, p, mlen, NULL))
-	    rc = 0;
+	    rc = RPMPGP_OK;
 	break;
     case 1:
 	if (!gcry_mpi_scan(&key->q, GCRYMPI_FMT_PGP, p, mlen, NULL))
-	    rc = 0;
+	    rc = RPMPGP_OK;
 	break;
     case 2:
 	if (!gcry_mpi_scan(&key->g, GCRYMPI_FMT_PGP, p, mlen, NULL))
-	    rc = 0;
+	    rc = RPMPGP_OK;
 	break;
     case 3:
 	if (!gcry_mpi_scan(&key->y, GCRYMPI_FMT_PGP, p, mlen, NULL))
-	    rc = 0;
+	    rc = RPMPGP_OK;
 	break;
     }
     return rc;
 }
 
-static int pgpVerifySigDSA(pgpDigAlg pgpkey, pgpDigAlg pgpsig, uint8_t *hash, size_t hashlen, int hash_algo)
+static rpmpgpRC pgpVerifySigDSA(pgpDigAlg pgpkey, pgpDigAlg pgpsig, uint8_t *hash, size_t hashlen, int hash_algo)
 {
     struct pgpDigKeyDSA_s *key = pgpkey->data;
     struct pgpDigSigDSA_s *sig = pgpsig->data;
     gcry_sexp_t sexp_sig = NULL, sexp_data = NULL, sexp_pkey = NULL;
-    int rc = 1;
+    rpmpgpRC rc = RPMPGP_ERROR_SIGNATURE_VERIFICATION;
     size_t qlen;
 
     if (!sig || !key)
@@ -201,7 +202,8 @@ static int pgpVerifySigDSA(pgpDigAlg pgpkey, pgpDigAlg pgpsig, uint8_t *hash, si
     gcry_sexp_build(&sexp_data, NULL, "(data (flags raw) (value %b))", (int)hashlen, (const char *)hash);
     gcry_sexp_build(&sexp_pkey, NULL, "(public-key (dsa (p %M) (q %M) (g %M) (y %M)))", key->p, key->q, key->g, key->y);
     if (sexp_sig && sexp_data && sexp_pkey)
-	rc = gcry_pk_verify(sexp_sig, sexp_data, sexp_pkey) == 0 ? 0 : 1;
+	if (gcry_pk_verify(sexp_sig, sexp_data, sexp_pkey) == 0)
+	    rc = RPMPGP_OK;
     gcry_sexp_release(sexp_sig);
     gcry_sexp_release(sexp_data);
     gcry_sexp_release(sexp_pkey);
@@ -242,10 +244,10 @@ struct pgpDigKeyECC_s {
     gcry_mpi_t q;
 };
 
-static int pgpSetSigMpiECC(pgpDigAlg pgpsig, int num, const uint8_t *p, int mlen)
+static rpmpgpRC pgpSetSigMpiECC(pgpDigAlg pgpsig, int num, const uint8_t *p, int mlen)
 {
     struct pgpDigSigECC_s *sig = pgpsig->data;
-    int rc = 1;
+    rpmpgpRC rc = RPMPGP_ERROR_BAD_SIGNATURE;
 
     if (!sig)
 	sig = pgpsig->data = xcalloc(1, sizeof(*sig));
@@ -253,20 +255,20 @@ static int pgpSetSigMpiECC(pgpDigAlg pgpsig, int num, const uint8_t *p, int mlen
     switch (num) {
     case 0:
 	if (!gcry_mpi_scan(&sig->r, GCRYMPI_FMT_PGP, p, mlen, NULL))
-	    rc = 0;
+	    rc = RPMPGP_OK;
 	break;
     case 1:
 	if (!gcry_mpi_scan(&sig->s, GCRYMPI_FMT_PGP, p, mlen, NULL))
-	    rc = 0;
+	    rc = RPMPGP_OK;
 	break;
     }
     return rc;
 }
 
-static int pgpSetKeyMpiECC(pgpDigAlg pgpkey, int num, const uint8_t *p, int mlen)
+static rpmpgpRC pgpSetKeyMpiECC(pgpDigAlg pgpkey, int num, const uint8_t *p, int mlen)
 {
     struct pgpDigKeyECC_s *key = pgpkey->data;
-    int rc = 1;
+    rpmpgpRC rc = RPMPGP_ERROR_BAD_PUBKEY;
 
     if (!key)
 	key = pgpkey->data = xcalloc(1, sizeof(*key));
@@ -274,7 +276,7 @@ static int pgpSetKeyMpiECC(pgpDigAlg pgpkey, int num, const uint8_t *p, int mlen
     switch (num) {
     case 0:
 	if (!gcry_mpi_scan(&key->q, GCRYMPI_FMT_PGP, p, mlen, NULL))
-	    rc = 0;
+	    rc = RPMPGP_OK;
 	break;
     }
     return rc;
@@ -293,12 +295,12 @@ ed25519_zero_extend(gcry_mpi_t x, unsigned char *buf, int bufl)
     return 0;
 }
 
-static int pgpVerifySigECC(pgpDigAlg pgpkey, pgpDigAlg pgpsig, uint8_t *hash, size_t hashlen, int hash_algo)
+static rpmpgpRC pgpVerifySigECC(pgpDigAlg pgpkey, pgpDigAlg pgpsig, uint8_t *hash, size_t hashlen, int hash_algo)
 {
     struct pgpDigKeyECC_s *key = pgpkey->data;
     struct pgpDigSigECC_s *sig = pgpsig->data;
     gcry_sexp_t sexp_sig = NULL, sexp_data = NULL, sexp_pkey = NULL;
-    int rc = 1;
+    rpmpgpRC rc = RPMPGP_ERROR_SIGNATURE_VERIFICATION;
     unsigned char buf_r[32], buf_s[32];
 
     if (!sig || !key)
@@ -310,7 +312,8 @@ static int pgpVerifySigECC(pgpDigAlg pgpkey, pgpDigAlg pgpsig, uint8_t *hash, si
 	gcry_sexp_build(&sexp_data, NULL, "(data (flags eddsa) (hash-algo sha512) (value %b))", (int)hashlen, (const char *)hash);
 	gcry_sexp_build(&sexp_pkey, NULL, "(public-key (ecc (curve \"Ed25519\") (flags eddsa) (q %M)))", key->q);
 	if (sexp_sig && sexp_data && sexp_pkey)
-	    rc = gcry_pk_verify(sexp_sig, sexp_data, sexp_pkey) == 0 ? 0 : 1;
+	    if (gcry_pk_verify(sexp_sig, sexp_data, sexp_pkey) == 0)
+		rc = RPMPGP_OK;
 	gcry_sexp_release(sexp_sig);
 	gcry_sexp_release(sexp_data);
 	gcry_sexp_release(sexp_pkey);
@@ -326,7 +329,8 @@ static int pgpVerifySigECC(pgpDigAlg pgpkey, pgpDigAlg pgpsig, uint8_t *hash, si
 	else if (pgpkey->curve == PGPCURVE_NIST_P_521)
 	    gcry_sexp_build(&sexp_pkey, NULL, "(public-key (ecc (curve \"NIST P-521\") (q %M)))", key->q);
 	if (sexp_sig && sexp_data && sexp_pkey)
-	    rc = gcry_pk_verify(sexp_sig, sexp_data, sexp_pkey) == 0 ? 0 : 1;
+	    if (gcry_pk_verify(sexp_sig, sexp_data, sexp_pkey) == 0)
+		rc = RPMPGP_OK;
 	gcry_sexp_release(sexp_sig);
 	gcry_sexp_release(sexp_data);
 	gcry_sexp_release(sexp_pkey);
@@ -357,15 +361,15 @@ static void pgpFreeKeyECC(pgpDigAlg pgpkey)
 
 /****************************** NULL **************************************/
 
-static int pgpSetMpiNULL(pgpDigAlg pgpkey, int num, const uint8_t *p, int mlen)
+static rpmpgpRC pgpSetMpiNULL(pgpDigAlg pgpkey, int num, const uint8_t *p, int mlen)
 {
-    return 1;
+    return RPMPGP_ERROR_UNSUPPORTED_ALGORITHM;
 }
 
-static int pgpVerifyNULL(pgpDigAlg pgpkey, pgpDigAlg pgpsig,
+static rpmpgpRC pgpVerifyNULL(pgpDigAlg pgpkey, pgpDigAlg pgpsig,
                          uint8_t *hash, size_t hashlen, int hash_algo)
 {
-    return 1;
+    return RPMPGP_ERROR_SIGNATURE_VERIFICATION;
 }
 
 static int pgpSupportedCurve(int algo, int curve)
