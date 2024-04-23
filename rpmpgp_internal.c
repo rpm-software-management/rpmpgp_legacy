@@ -61,6 +61,7 @@ struct pgpDigParams_s {
     uint8_t signhash16[2];
     pgpKeyID_t signid;		/*!< key id of pubkey or signature */
     uint32_t key_expire;	/*!< key expire time. */
+    uint32_t sig_expire;	/*!< signature expire time. */
     int revoked;		/*!< is the key revoked? */
     uint8_t saved;		/*!< Various flags. */
 #define	PGPDIG_SAVED_TIME	(1 << 0)
@@ -69,6 +70,7 @@ struct pgpDigParams_s {
 #define	PGPDIG_SAVED_KEY_EXPIRE	(1 << 3)
 #define	PGPDIG_SAVED_PRIMARY	(1 << 4)
 #define	PGPDIG_SAVED_VALID	(1 << 5)
+#define	PGPDIG_SAVED_SIG_EXPIRE	(1 << 6)
     uint8_t * embedded_sig;	/* embedded signature */
     size_t embedded_sig_len;	/* length of the embedded signature */
     pgpKeyID_t mainid;		/* key id of main key if this is a subkey */
@@ -242,7 +244,7 @@ static rpmpgpRC pgpPrtSubType(const uint8_t *h, size_t hlen, pgpDigParams _digp,
 	case PGPSUBTYPE_SIG_CREATE_TIME:
 	    if (!hashed)
 		break; /* RFC 4880 §5.2.3.4 creation time MUST be hashed */
-	    if (plen-1 != 4)
+	    if (plen - 1 != 4)
 		break; /* other lengths not understood */
 	    if (_digp->saved & PGPDIG_SAVED_TIME)
 		return RPMPGP_ERROR_DUPLICATE_DATA;
@@ -252,7 +254,7 @@ static rpmpgpRC pgpPrtSubType(const uint8_t *h, size_t hlen, pgpDigParams _digp,
 	    break;
 
 	case PGPSUBTYPE_ISSUER_KEYID:
-	    if (plen-1 != sizeof(_digp->signid))
+	    if (plen - 1 != sizeof(_digp->signid))
 		break; /* other lengths not understood */
 	    impl = *p;
 	    if (!(_digp->saved & PGPDIG_SAVED_ID)) {
@@ -274,13 +276,25 @@ static rpmpgpRC pgpPrtSubType(const uint8_t *h, size_t hlen, pgpDigParams _digp,
 	case PGPSUBTYPE_KEY_EXPIRE_TIME:
 	    if (!hashed)
 		break;	/* Subpackets in the unhashed section cannot be trusted */
-	    if (plen-1 != 4)
+	    if (plen - 1 != 4)
 		break; /* other lengths not understood */
 	    if (_digp->saved & PGPDIG_SAVED_KEY_EXPIRE)
 		return RPMPGP_ERROR_DUPLICATE_DATA;
 	    impl = *p;
 	    _digp->key_expire = pgpGrab4(p + 1);
 	    _digp->saved |= PGPDIG_SAVED_KEY_EXPIRE;
+	    break;
+
+	case PGPSUBTYPE_SIG_EXPIRE_TIME:
+	    if (!hashed)
+		break; /* RFC 4880 §5.2.3.4 creation time MUST be hashed */
+	    if (plen - 1 != 4)
+		break; /* other lengths not understood */
+	    if (_digp->saved & PGPDIG_SAVED_SIG_EXPIRE)
+		return RPMPGP_ERROR_DUPLICATE_DATA;
+	    impl = *p;
+	    _digp->sig_expire = pgpGrab4(p + 1);
+	    _digp->saved |= PGPDIG_SAVED_SIG_EXPIRE;
 	    break;
 
 	case PGPSUBTYPE_EMBEDDED_SIG:
@@ -300,7 +314,7 @@ static rpmpgpRC pgpPrtSubType(const uint8_t *h, size_t hlen, pgpDigParams _digp,
 	case PGPSUBTYPE_PRIMARY_USERID:
 	    if (!hashed)
 		break;	/* Subpackets in the unhashed section cannot be trusted */
-	    if (plen-1 != 1)
+	    if (plen - 1 != 1)
 		break; /* other lengths not understood */
 	    impl = *p;
 	    if (p[1])
@@ -676,6 +690,11 @@ static rpmpgpRC pgpPrtPkt(struct pgpPkt *p, pgpDigParams _digp)
     return rc;
 }
 
+static uint32_t pgpCurrentTime(void) {
+    time_t t = time(NULL);
+    return (uint32_t)t;
+}
+
 static rpmpgpRC pgpVerifySignatureRaw(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx)
 {
     DIGEST_CTX ctx;
@@ -1020,6 +1039,7 @@ static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams 
     uint32_t key_flags_sig_time = 0;
     struct pgpPkt mainpkt, sectionpkt;
     int haveselfsig;
+    uint32_t now = 0;
 
     if (lints)
 	*lints = NULL;
@@ -1148,6 +1168,7 @@ static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams 
 		}
 		if ((rc = pgpVerifySelf(digp, sigdigp, &mainpkt, NULL)) != RPMPGP_OK)
 		    break;		/* verification failed */
+		/* can a revokation signature expire? */
 		digp->revoked = 1;				/* this is final */
 		digp->saved |= PGPDIG_SAVED_VALID;		/* we have at least one correct self-sig */
 	    }
@@ -1177,7 +1198,13 @@ static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams 
 		    /* note that cert revokations may get overwritten by newer certifications (like in gnupg) */
 		}
 	    }
-
+	    /* check if this signature is expired */
+	    if (needsig && (sigdigp->saved & PGPDIG_SAVED_SIG_EXPIRE) != 0 && sigdigp->sig_expire) {
+		if (!now)
+		    now = pgpCurrentTime();
+		if (now < sigdigp->time || sigdigp->sig_expire < now - sigdigp->time)
+		    needsig = 0;	/* signature is expired, ignore */
+	    }
 	    if (needsig && (!newest_digp || sigdigp->time >= newest_digp->time)) {
 		newest_digp = pgpDigParamsFree(newest_digp);
 		newest_digp = sigdigp;
@@ -1233,6 +1260,7 @@ int pgpPrtParamsSubkeys(const uint8_t *pkts, size_t pktlen,
     int alloced = 10;
     struct pgpPkt mainpkt, subkeypkt, pkt;
     int rc, i;
+    uint32_t now = 0;
 
     if (decodePkt(p, (pend - p), &mainpkt) || mainpkt.tag != PGPTAG_PUBLIC_KEY)
 	return -1;	/* pubkey packet must come first */
@@ -1293,6 +1321,12 @@ int pgpPrtParamsSubkeys(const uint8_t *pkts, size_t pktlen,
 	    /* we use the NoMPI variant because we do not verify */
 	    if (pgpPrtSigNoMPI(pkt.tag, pkt.body, pkt.blen, sigdigp) != RPMPGP_OK) {
 		sigdigp = pgpDigParamsFree(sigdigp);
+	    }
+	    if (sigdigp && (sigdigp->saved & PGPDIG_SAVED_SIG_EXPIRE) != 0 && sigdigp->sig_expire) {
+		if (!now)
+		    now = pgpCurrentTime();
+		if (now < sigdigp->time || sigdigp->sig_expire < now - sigdigp->time)
+		    sigdigp = pgpDigParamsFree(sigdigp);	/* signature is expired */
 	    }
 	    if (sigdigp && sigdigp->sigtype == PGPSIGTYPE_SUBKEY_REVOKE) {
 		if (subdigp->revoked != 2)
@@ -1436,6 +1470,14 @@ static void add_key_expired_lint(pgpDigParams key, char **lints)
     free(expdate);
 }
 
+static void add_sig_expired_lint(pgpDigParams sig, char **lints)
+{
+    time_t exptime = (time_t)sig->time + sig->sig_expire;
+    char *expdate = format_time(&exptime);
+    rasprintf(lints, "Signature expired on %s", expdate);
+    free(expdate);
+}
+
 
 rpmRC pgpVerifySignature2(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx, char **lints)
 {
@@ -1448,6 +1490,21 @@ rpmRC pgpVerifySignature2(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx
     rc = pgpVerifySignatureRaw(key, sig, hashctx);
     if (rc != RPMPGP_OK)
 	goto exit;
+    /* now check the meta information of the signature */
+    if ((sig->saved & PGPDIG_SAVED_SIG_EXPIRE) != 0 && sig->sig_expire) {
+	uint32_t now = pgpCurrentTime();
+	if (now < sig->time) {
+	    if (lints)
+		rasprintf(lints, "Signature has been created in the future");
+	    res = RPMRC_NOTTRUSTED;
+	} else if (sig->sig_expire < now - sig->time) {
+	    if (lints)
+		add_sig_expired_lint(sig, lints);
+	    res = RPMRC_NOTTRUSTED;
+	}
+	if (rc != RPMPGP_OK)
+	    goto exit;
+    }
     if (!key) {
 	/* that's all we can do */
 	res = RPMRC_NOKEY;
