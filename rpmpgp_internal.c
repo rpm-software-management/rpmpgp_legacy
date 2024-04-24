@@ -415,7 +415,7 @@ static rpmpgpRC pgpPrtSubType(const uint8_t *h, size_t hlen, pgpDigParams _digp,
 		break; /* other lengths not understood */
 	    if (_digp->saved & PGPDIG_SAVED_TIME)
 		return RPMPGP_ERROR_DUPLICATE_DATA;
-	    impl = *p;
+	    impl = 1;
 	    _digp->time = pgpGrab4(p + 1);
 	    _digp->saved |= PGPDIG_SAVED_TIME;
 	    break;
@@ -423,7 +423,7 @@ static rpmpgpRC pgpPrtSubType(const uint8_t *h, size_t hlen, pgpDigParams _digp,
 	case PGPSUBTYPE_ISSUER_KEYID:
 	    if (plen - 1 != sizeof(_digp->signid))
 		break; /* other lengths not understood */
-	    impl = *p;
+	    impl = 1;
 	    if (!(_digp->saved & PGPDIG_SAVED_ID)) {
 		memcpy(_digp->signid, p+1, sizeof(_digp->signid));
 		_digp->saved |= PGPDIG_SAVED_ID;
@@ -435,7 +435,7 @@ static rpmpgpRC pgpPrtSubType(const uint8_t *h, size_t hlen, pgpDigParams _digp,
 		break;	/* Subpackets in the unhashed section cannot be trusted */
 	    if (_digp->saved & PGPDIG_SAVED_KEY_FLAGS)
 		return RPMPGP_ERROR_DUPLICATE_DATA;
-	    impl = *p;
+	    impl = 1;
 	    _digp->key_flags = plen >= 2 ? p[1] : 0;
 	    _digp->saved |= PGPDIG_SAVED_KEY_FLAGS;
 	    break;
@@ -447,7 +447,7 @@ static rpmpgpRC pgpPrtSubType(const uint8_t *h, size_t hlen, pgpDigParams _digp,
 		break; /* other lengths not understood */
 	    if (_digp->saved & PGPDIG_SAVED_KEY_EXPIRE)
 		return RPMPGP_ERROR_DUPLICATE_DATA;
-	    impl = *p;
+	    impl = 1;
 	    _digp->key_expire = pgpGrab4(p + 1);
 	    _digp->saved |= PGPDIG_SAVED_KEY_EXPIRE;
 	    break;
@@ -459,7 +459,7 @@ static rpmpgpRC pgpPrtSubType(const uint8_t *h, size_t hlen, pgpDigParams _digp,
 		break; /* other lengths not understood */
 	    if (_digp->saved & PGPDIG_SAVED_SIG_EXPIRE)
 		return RPMPGP_ERROR_DUPLICATE_DATA;
-	    impl = *p;
+	    impl = 1;
 	    _digp->sig_expire = pgpGrab4(p + 1);
 	    _digp->saved |= PGPDIG_SAVED_SIG_EXPIRE;
 	    break;
@@ -473,7 +473,7 @@ static rpmpgpRC pgpPrtSubType(const uint8_t *h, size_t hlen, pgpDigParams _digp,
 		break;	/* obviously not a signature */
 	    if (_digp->embedded_sig)
 		break;	/* just store the first one. we may need to changed this to select the most recent. */
-	    impl = *p;
+	    impl = 1;
 	    _digp->embedded_sig_len = plen - 1;
 	    _digp->embedded_sig = memcpy(xmalloc(plen - 1), p + 1, plen - 1);
 	    break;
@@ -483,7 +483,7 @@ static rpmpgpRC pgpPrtSubType(const uint8_t *h, size_t hlen, pgpDigParams _digp,
 		break;	/* Subpackets in the unhashed section cannot be trusted */
 	    if (plen - 1 != 1)
 		break; /* other lengths not understood */
-	    impl = *p;
+	    impl = 1;
 	    if (p[1])
 		_digp->saved |= PGPDIG_SAVED_PRIMARY;
 	    break;
