@@ -76,6 +76,12 @@ struct pgpDigParams_s {
 };
 
 RPM_GNUC_INTERNAL
+pgpDigAlg pgpDigAlgFree(pgpDigAlg alg);
+
+RPM_GNUC_INTERNAL
+pgpDigParams pgpDigParamsNew(uint8_t tag);
+
+RPM_GNUC_INTERNAL
 pgpDigAlg pgpDigAlgNewPubkey(int algo, int curve);
 
 RPM_GNUC_INTERNAL
