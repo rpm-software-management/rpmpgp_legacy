@@ -119,7 +119,7 @@ void pgpAddKeyLint(pgpDigParams key, char **lints, const char *msg)
     char *main_keyid = key->tag == PGPTAG_PUBLIC_SUBKEY ? format_keyid(key->mainid, key->userid) : NULL;
     *lints = NULL;
     if (key->tag == PGPTAG_PUBLIC_SUBKEY) {
-	/* special case messagt about subkeys with a revoked primary key */
+	/* special case the message about subkeys with a revoked primary key */
 	if (key->revoked == 2)
 	    rasprintf(lints, "Key %s is a subkey of key %s, which has been revoked", keyid, main_keyid);
 	else
