@@ -260,8 +260,9 @@ static rpmpgpRC pgpPrtKeyParams(pgpTag tag, const uint8_t *h, size_t hlen,
 	return  RPMPGP_ERROR_INTERNAL;
     p = h + keyp->mpi_offset;
     if (keyp->pubkey_algo == PGPPUBKEYALGO_EDDSA || keyp->pubkey_algo == PGPPUBKEYALGO_ECDSA) {
-	int len = (hlen > 1) ? p[0] : 0;
-	if (len == 0 || len == 0xff || len >= hlen)
+	size_t plen = hlen - keyp->mpi_offset;
+	int len = plen > 0 ? p[0] : 0;
+	if (len == 0 || len == 0xff || len + 1 > plen)
 	    return RPMPGP_ERROR_CORRUPT_PGP_PACKET;
 	curve = pgpCurveByOid(p + 1, len);
 	if (!curve)
