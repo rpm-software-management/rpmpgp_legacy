@@ -781,15 +781,14 @@ rpmRC pgpPubKeyLint(const uint8_t *pkts, size_t pktslen, char **explanation)
 
 rpmRC pgpVerifySignature2(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx, char **lints)
 {
-    rpmRC res = RPMRC_FAIL; /* assume failure */
-    rpmpgpRC rc;
-
+    rpmRC res;
     if (lints)
         *lints = NULL;
     
-    rc = pgpVerifySignatureRaw(key, sig, hashctx);
-    if (rc != RPMPGP_OK)
+    res = pgpVerifySignatureRaw(key, sig, hashctx) == RPMPGP_OK ? RPMRC_OK : RPMRC_FAIL;
+    if (res != RPMRC_OK)
 	goto exit;
+
     /* now check the meta information of the signature */
     if ((sig->saved & PGPDIG_SAVED_SIG_EXPIRE) != 0 && sig->sig_expire) {
 	uint32_t now = pgpCurrentTime();
@@ -802,7 +801,7 @@ rpmRC pgpVerifySignature2(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx
 		pgpAddSigExpiredLint(sig, lints);
 	    res = RPMRC_NOTTRUSTED;
 	}
-	if (rc != RPMPGP_OK)
+	if (res != RPMRC_OK)
 	    goto exit;
     }
     if (!key) {
