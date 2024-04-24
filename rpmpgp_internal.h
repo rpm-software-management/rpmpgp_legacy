@@ -3,6 +3,9 @@
 
 #include <rpm/rpmpgp.h>
 
+/* max number of bytes in a key */
+#define RPM_MAX_OPENPGP_BYTES (65535)
+
 typedef enum rpmpgpRC_e {
     RPMPGP_OK				= 0,
     RPMPGP_ERROR_INTERNAL		= 10,
@@ -75,6 +78,23 @@ struct pgpDigParams_s {
     pgpDigAlg alg;		/*!< algorithm specific data like MPIs */
 };
 
+/*
+ * decoded PGP packet
+ */
+typedef struct pgpPkt_s {
+    uint8_t tag;		/* decoded PGP tag */
+    const uint8_t *head;	/* pointer to start of packet (header) */
+    const uint8_t *body;	/* pointer to packet body */
+    size_t blen;		/* length of body in bytes */
+} pgpPkt;
+
+
+/* pgp packet decoding */
+RPM_GNUC_INTERNAL
+rpmpgpRC pgpDecodePkt(const uint8_t *p, size_t plen, pgpPkt *pkt);
+
+
+/* allocation */
 RPM_GNUC_INTERNAL
 pgpDigAlg pgpDigAlgFree(pgpDigAlg alg);
 
@@ -88,8 +108,24 @@ RPM_GNUC_INTERNAL
 pgpDigAlg pgpDigAlgNewSignature(int algo);
 
 
-/* diagnostics */
+/* pgp packet data extraction */
+RPM_GNUC_INTERNAL
+rpmpgpRC pgpPrtKey(pgpTag tag, const uint8_t *h, size_t hlen, pgpDigParams _digp);
 
+RPM_GNUC_INTERNAL
+rpmpgpRC pgpPrtSig(pgpTag tag, const uint8_t *h, size_t hlen, pgpDigParams _digp);
+
+RPM_GNUC_INTERNAL
+rpmpgpRC pgpPrtSigNoParams(pgpTag tag, const uint8_t *h, size_t hlen, pgpDigParams _digp);
+
+RPM_GNUC_INTERNAL
+rpmpgpRC pgpPrtSigParams(pgpTag tag, const uint8_t *h, size_t hlen, pgpDigParams sigp);
+
+RPM_GNUC_INTERNAL
+rpmpgpRC pgpPrtUserID(pgpTag tag, const uint8_t *h, size_t hlen, pgpDigParams _digp);
+
+
+/* diagnostics */
 RPM_GNUC_INTERNAL
 void pgpAddErrorLint(pgpDigParams digp, char **lints, rpmpgpRC error);
 
@@ -102,8 +138,19 @@ void pgpAddSigLint(pgpDigParams sig, char **lints, const char *msg);
 RPM_GNUC_INTERNAL
 void pgpAddKeyExpiredLint(pgpDigParams key, char **lints);
 
-void pgpAddSigExpiredLint(pgpDigParams sig, char **lints);
 RPM_GNUC_INTERNAL
+void pgpAddSigExpiredLint(pgpDigParams sig, char **lints);
 
+
+/* pubkey parsing */
+RPM_GNUC_INTERNAL
+int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams * ret, char **lints);
+
+
+/* signature verification */
+rpmpgpRC pgpVerifySignatureRaw(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx);
+
+/* misc */
+uint32_t pgpCurrentTime(void);
 
 #endif /* _RPMPGP_INTERNAL_H */
