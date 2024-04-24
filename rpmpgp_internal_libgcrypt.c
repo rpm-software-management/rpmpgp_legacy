@@ -359,19 +359,6 @@ static void pgpFreeKeyECC(pgpDigAlg pgpkey)
 }
 
 
-/****************************** NULL **************************************/
-
-static rpmpgpRC pgpSetMpiNULL(pgpDigAlg pgpkey, int num, const uint8_t *p, int mlen)
-{
-    return RPMPGP_ERROR_UNSUPPORTED_ALGORITHM;
-}
-
-static rpmpgpRC pgpVerifyNULL(pgpDigAlg pgpkey, pgpDigAlg pgpsig,
-                         uint8_t *hash, size_t hashlen, int hash_algo)
-{
-    return RPMPGP_ERROR_SIGNATURE_VERIFICATION;
-}
-
 static int pgpSupportedCurve(int algo, int curve)
 {
     if (algo == PGPPUBKEYALGO_EDDSA && curve == PGPCURVE_ED25519) {
@@ -410,23 +397,16 @@ void pgpDigAlgInitPubkey(pgpDigAlg ka, int algo, int curve)
         break;
     case PGPPUBKEYALGO_ECDSA:
     case PGPPUBKEYALGO_EDDSA:
-	if (!pgpSupportedCurve(algo, curve)) {
-	    ka->setmpi = pgpSetMpiNULL;
-	    ka->mpis = -1;
+	if (!pgpSupportedCurve(algo, curve))
 	    break;
-	}
         ka->setmpi = pgpSetKeyMpiECC;
         ka->free = pgpFreeKeyECC;
         ka->mpis = 1;
         ka->curve = curve;
         break;
     default:
-        ka->setmpi = pgpSetMpiNULL;
-        ka->mpis = -1;
         break;
     }
-
-    ka->verify = pgpVerifyNULL; /* keys can't be verified */
 }
 
 void pgpDigAlgInitSignature(pgpDigAlg sa, int algo)
@@ -452,9 +432,6 @@ void pgpDigAlgInitSignature(pgpDigAlg sa, int algo)
         sa->mpis = 2;
         break;
     default:
-        sa->setmpi = pgpSetMpiNULL;
-        sa->verify = pgpVerifyNULL;
-        sa->mpis = -1;
         break;
     }
 }

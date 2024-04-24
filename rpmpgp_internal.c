@@ -219,21 +219,21 @@ static inline int pgpMpiLen(const uint8_t *p)
 static rpmpgpRC processMpis(const int mpis, pgpDigAlg alg,
 		       const uint8_t *p, const uint8_t *const pend)
 {
-    rpmpgpRC rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;		/* assume failure */
     int i = 0;
     for (; i < mpis && pend - p >= 2; i++) {
 	int mpil = pgpMpiLen(p);
 	if (mpil < 2 || pend - p < mpil)
-	    return rc;
-	if (alg && alg->setmpi(alg, i, p, mpil))
-	    return rc;
+	    return RPMPGP_ERROR_CORRUPT_PGP_PACKET;
+	if (alg) {
+	    rpmpgpRC rc = alg->setmpi ? alg->setmpi(alg, i, p, mpil) : RPMPGP_ERROR_UNSUPPORTED_ALGORITHM;
+	    if (rc != RPMPGP_OK)
+		return rc;
+	}
 	p += mpil;
     }
 
     /* Does the size and number of MPI's match our expectations? */
-    if (p == pend && i == mpis)
-	rc = RPMPGP_OK;
-    return rc;
+    return p == pend && i == mpis ? RPMPGP_OK : RPMPGP_ERROR_CORRUPT_PGP_PACKET;
 }
 
 static uint8_t curve_oids[] = {

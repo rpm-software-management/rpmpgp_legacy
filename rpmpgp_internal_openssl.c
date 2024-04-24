@@ -796,18 +796,8 @@ done:
 #endif
 
 
-/****************************** NULL **************************************/
 
-static rpmpgpRC pgpSetMpiNULL(pgpDigAlg pgpkey, int num, const uint8_t *p, int mlen)
-{
-    return RPMPGP_ERROR_UNSUPPORTED_ALGORITHM;
-}
-
-static rpmpgpRC pgpVerifyNULL(pgpDigAlg pgpkey, pgpDigAlg pgpsig,
-                         uint8_t *hash, size_t hashlen, int hash_algo)
-{
-    return RPMPGP_ERROR_SIGNATURE_VERIFICATION;
-}
+/****************************** PGP **************************************/
 
 static int pgpSupportedCurve(int algo, int curve)
 {
@@ -824,7 +814,6 @@ static int pgpSupportedCurve(int algo, int curve)
     return 0;
 }
 
-/****************************** PGP **************************************/
 void pgpDigAlgInitPubkey(pgpDigAlg ka, int algo, int curve)
 {
     switch (algo) {
@@ -839,11 +828,8 @@ void pgpDigAlgInitPubkey(pgpDigAlg ka, int algo, int curve)
         ka->mpis = 4;
         break;
     case PGPPUBKEYALGO_ECDSA:
-	if (!pgpSupportedCurve(algo, curve)) {
-	    ka->setmpi = pgpSetMpiNULL;
-	    ka->mpis = -1;
+	if (!pgpSupportedCurve(algo, curve))
 	    break;
-	}
         ka->setmpi = pgpSetKeyMpiECDSA;
         ka->free = pgpFreeKeyECDSA;
         ka->mpis = 1;
@@ -851,11 +837,8 @@ void pgpDigAlgInitPubkey(pgpDigAlg ka, int algo, int curve)
 	break;
 #ifdef EVP_PKEY_ED25519
     case PGPPUBKEYALGO_EDDSA:
-	if (!pgpSupportedCurve(algo, curve)) {
-	    ka->setmpi = pgpSetMpiNULL;	/* unsupported curve */
-	    ka->mpis = -1;
+	if (!pgpSupportedCurve(algo, curve))
 	    break;
-	}
         ka->setmpi = pgpSetKeyMpiEDDSA;
         ka->free = pgpFreeKeyEDDSA;
         ka->mpis = 1;
@@ -863,12 +846,8 @@ void pgpDigAlgInitPubkey(pgpDigAlg ka, int algo, int curve)
         break;
 #endif
     default:
-        ka->setmpi = pgpSetMpiNULL;
-        ka->mpis = -1;
         break;
     }
-
-    ka->verify = pgpVerifyNULL; /* keys can't be verified */
 }
 
 void pgpDigAlgInitSignature(pgpDigAlg sa, int algo)
@@ -901,9 +880,6 @@ void pgpDigAlgInitSignature(pgpDigAlg sa, int algo)
         break;
 #endif
     default:
-        sa->setmpi = pgpSetMpiNULL;
-        sa->verify = pgpVerifyNULL;
-        sa->mpis = -1;
         break;
     }
 }
