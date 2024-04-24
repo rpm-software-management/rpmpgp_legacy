@@ -154,7 +154,7 @@ struct pgpPkt {
     size_t blen;		/* length of body in bytes */
 };
 
-static rpmpgpRC decodePkt(const uint8_t *p, size_t plen, struct pgpPkt *pkt)
+static rpmpgpRC pgpDecodePkt(const uint8_t *p, size_t plen, struct pgpPkt *pkt)
 {
     rpmpgpRC rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET; /* assume failure */
 
@@ -355,7 +355,7 @@ static rpmpgpRC pgpPrtSigParams(pgpTag tag, const uint8_t *h, size_t hlen,
     return rc;
 }
 
-static rpmpgpRC pgpPrtSigNoMPI(pgpTag tag, const uint8_t *h, size_t hlen,
+static rpmpgpRC pgpPrtSigNoParams(pgpTag tag, const uint8_t *h, size_t hlen,
 		     pgpDigParams _digp)
 {
     rpmpgpRC rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;		/* assume failure */
@@ -439,7 +439,7 @@ static rpmpgpRC pgpPrtSigNoMPI(pgpTag tag, const uint8_t *h, size_t hlen,
 static rpmpgpRC pgpPrtSig(pgpTag tag, const uint8_t *h, size_t hlen,
 		     pgpDigParams _digp)
 {
-    rpmpgpRC rc = pgpPrtSigNoMPI(tag, h, hlen, _digp);
+    rpmpgpRC rc = pgpPrtSigNoParams(tag, h, hlen, _digp);
     if (rc == RPMPGP_OK)
 	rc = pgpPrtSigParams(tag, h, hlen, _digp);
     return rc;
@@ -840,7 +840,7 @@ static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams 
 	*lints = NULL;
 
     /* parse the main pubkey */
-    if (pktlen > RPM_MAX_OPENPGP_BYTES || decodePkt(p, (pend - p), &mainpkt)) {
+    if (pktlen > RPM_MAX_OPENPGP_BYTES || pgpDecodePkt(p, (pend - p), &mainpkt)) {
 	pgpAddErrorLint(NULL, lints, RPMPGP_ERROR_CORRUPT_PGP_PACKET);
 	return -1;
     }
@@ -869,7 +869,7 @@ static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams 
 	int end_of_section;
 
 	if (p < pend) {
-	    if (decodePkt(p, (pend - p), &pkt)) {
+	    if (pgpDecodePkt(p, (pend - p), &pkt)) {
 		rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;
 		break;
 	    }
@@ -929,8 +929,8 @@ static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams 
 	    int needsig = 0;
 	    int isselfsig;
 	    sigdigp = pgpDigParamsNew(pkt.tag);
-	    /* use the NoMPI variant because we want to ignore non self-sigs */
-	    if ((rc = pgpPrtSigNoMPI(pkt.tag, pkt.body, pkt.blen, sigdigp)) != RPMPGP_OK)
+	    /* use the NoParams variant because we want to ignore non self-sigs */
+	    if ((rc = pgpPrtSigNoParams(pkt.tag, pkt.body, pkt.blen, sigdigp)) != RPMPGP_OK)
 		break;
 
 	    isselfsig = is_same_keyid(digp, sigdigp);
@@ -1057,7 +1057,7 @@ int pgpPrtParamsSubkeys(const uint8_t *pkts, size_t pktlen,
     int rc, i;
     uint32_t now = 0;
 
-    if (decodePkt(p, (pend - p), &mainpkt) || mainpkt.tag != PGPTAG_PUBLIC_KEY)
+    if (pgpDecodePkt(p, (pend - p), &mainpkt) || mainpkt.tag != PGPTAG_PUBLIC_KEY)
 	return -1;	/* pubkey packet must come first */
     p += (mainpkt.body - mainpkt.head) + mainpkt.blen;
 
@@ -1066,7 +1066,7 @@ int pgpPrtParamsSubkeys(const uint8_t *pkts, size_t pktlen,
     digps = xmalloc(alloced * sizeof(*digps));
     while (1) {
 	if (p < pend) {
-	    if (decodePkt(p, (pend - p), &pkt))
+	    if (pgpDecodePkt(p, (pend - p), &pkt))
 		break;
 	} else {
 	    pkt.tag = 0;
@@ -1113,8 +1113,8 @@ int pgpPrtParamsSubkeys(const uint8_t *pkts, size_t pktlen,
 	    }
 	} else if (pkt.tag == PGPTAG_SIGNATURE && subdigp != NULL) {
 	    sigdigp = pgpDigParamsNew(pkt.tag);
-	    /* we use the NoMPI variant because we do not verify */
-	    if (pgpPrtSigNoMPI(pkt.tag, pkt.body, pkt.blen, sigdigp) != RPMPGP_OK) {
+	    /* we use the NoParams variant because we do not verify */
+	    if (pgpPrtSigNoParams(pkt.tag, pkt.body, pkt.blen, sigdigp) != RPMPGP_OK) {
 		sigdigp = pgpDigParamsFree(sigdigp);
 	    }
 	    if (sigdigp && (sigdigp->saved & PGPDIG_SAVED_SIG_EXPIRE) != 0 && sigdigp->sig_expire) {
@@ -1167,7 +1167,7 @@ int pgpPrtParams2(const uint8_t * pkts, size_t pktlen, unsigned int pkttype,
 
     if (lints)
         *lints = NULL;
-    if (pktlen > RPM_MAX_OPENPGP_BYTES || decodePkt(pkts, pktlen, &pkt)) {
+    if (pktlen > RPM_MAX_OPENPGP_BYTES || pgpDecodePkt(pkts, pktlen, &pkt)) {
 	pgpAddErrorLint(NULL, lints, RPMPGP_ERROR_CORRUPT_PGP_PACKET);
 	return -1;
     }
@@ -1278,7 +1278,7 @@ int pgpPubKeyCertLen(const uint8_t *pkts, size_t pktslen, size_t *certlen)
     struct pgpPkt pkt;
 
     while (p < pend) {
-	if (decodePkt(p, (pend - p), &pkt))
+	if (pgpDecodePkt(p, (pend - p), &pkt))
 	    return -1;
 
 	if (pkt.tag == PGPTAG_PUBLIC_KEY && pkts != p) {
@@ -1298,7 +1298,7 @@ int pgpPubkeyKeyID(const uint8_t * pkts, size_t pktslen, pgpKeyID_t keyid)
 {
     struct pgpPkt pkt;
 
-    if (decodePkt(pkts, pktslen, &pkt))
+    if (pgpDecodePkt(pkts, pktslen, &pkt))
 	return -1;
     return getKeyID(pkt.body, pkt.blen, keyid) == RPMPGP_OK ? 0 : -1;
 }
@@ -1308,7 +1308,7 @@ int pgpPubkeyFingerprint(const uint8_t * pkts, size_t pktslen,
 {
     struct pgpPkt pkt;
 
-    if (decodePkt(pkts, pktslen, &pkt))
+    if (pgpDecodePkt(pkts, pktslen, &pkt))
 	return -1;
     return getPubkeyFingerprint(pkt.body, pkt.blen, fp, fplen) == RPMPGP_OK ? 0 : -1;
 }
