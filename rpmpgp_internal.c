@@ -818,81 +818,6 @@ static int is_same_keyid(pgpDigParams digp, pgpDigParams sigdigp)
 	memcmp(digp->signid, sigdigp->signid, sizeof(digp->signid)) == 0;
 }
 
-static void add_error_lint(pgpDigParams digp, rpmpgpRC error, char **lints)
-{
-    const char *msg = NULL;
-    if (error == RPMPGP_OK || !lints)
-	return;
-    if (digp) {
-	switch (error) {
-	case RPMPGP_ERROR_UNSUPPORTED_VERSION:
-	    if (digp->tag == PGPTAG_PUBLIC_KEY || digp->tag == PGPTAG_PUBLIC_SUBKEY)
-		rasprintf(lints, "Unsupported pubkey version (V%d)", digp->version);
-	    else if (digp->tag == PGPTAG_SIGNATURE)
-		rasprintf(lints, "Unsupported signature version (V%d)", digp->version);
-	    else
-		rasprintf(lints, "Unsupported packet version (V%d)", digp->version);
-	    return;
-	case RPMPGP_ERROR_UNSUPPORTED_ALGORITHM:
-	    rasprintf(lints, "Unsupported algorithm (%d)", digp->pubkey_algo);
-	    return;
-	default:
-	    break;
-	}
-    }
-    switch (error) {
-    case RPMPGP_ERROR_INTERNAL:
-	msg = "Internal PGP parser error";
-	break;
-    case RPMPGP_ERROR_CORRUPT_PGP_PACKET:
-	msg = "Corrupt PGP packet";
-	break;
-    case RPMPGP_ERROR_UNEXPECTED_PGP_PACKET:
-	msg = "Unexpected PGP packet";
-	break;
-    case RPMPGP_ERROR_NO_CREATION_TIME:
-	msg = "Signature without creation time";
-	break;
-    case RPMPGP_ERROR_DUPLICATE_DATA:
-	msg = "Duplicate data in signature";
-	break;
-    case RPMPGP_ERROR_UNKNOWN_CRITICAL_PKT:
-	msg = "Unknown critical packet in signature";
-	break;
-    case RPMPGP_ERROR_BAD_PUBKEY_STRUCTURE:
-	msg = "Bad pubkey structure";
-	break;
-    case RPMPGP_ERROR_SELFSIG_VERIFICATION:
-	msg = "Pubkey self-signature verification failure";
-	break;
-    case RPMPGP_ERROR_MISSING_SELFSIG:
-	msg = "Pubkey misses a self-signature";
-	break;
-    case RPMPGP_ERROR_UNSUPPORTED_VERSION:
-	msg = "Unsupported packet version";
-	break;
-    case RPMPGP_ERROR_UNSUPPORTED_ALGORITHM:
-	msg = "Unsupported pubkey algorithm";
-	break;
-    case RPMPGP_ERROR_UNSUPPORTED_CURVE:
-	msg = "Unsupported pubkey curve";
-	break;
-    case RPMPGP_ERROR_SIGNATURE_VERIFICATION:
-	msg = "Signature verification failure";
-	break;
-    case RPMPGP_ERROR_BAD_PUBKEY:
-	msg = "Pubkey was not accepted by crypto backend";
-	break;
-    case RPMPGP_ERROR_BAD_SIGNATURE:
-	msg = "Signature was not accepted by crypto backend";
-	break;
-    default:
-	rasprintf(lints, "Unknown error (%d)", error);
-	return;
-    }
-    *lints = xstrdup(msg);
-}
-
 /* Parse a complete pubkey with all associated packets */
 /* This is similar to gnupg's merge_selfsigs_main() function */
 static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams * ret,
@@ -916,11 +841,11 @@ static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams 
 
     /* parse the main pubkey */
     if (pktlen > RPM_MAX_OPENPGP_BYTES || decodePkt(p, (pend - p), &mainpkt)) {
-	add_error_lint(NULL, RPMPGP_ERROR_CORRUPT_PGP_PACKET, lints);
+	pgpAddErrorLint(NULL, lints, RPMPGP_ERROR_CORRUPT_PGP_PACKET);
 	return -1;
     }
     if (mainpkt.tag != PGPTAG_PUBLIC_KEY) {
-	add_error_lint(NULL, RPMPGP_ERROR_UNEXPECTED_PGP_PACKET, lints);
+	pgpAddErrorLint(NULL, lints, RPMPGP_ERROR_UNEXPECTED_PGP_PACKET);
 	return -1;	/* pubkey packet must come first */
     }
     p += (mainpkt.body - mainpkt.head) + mainpkt.blen;
@@ -929,7 +854,7 @@ static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams 
     digp = pgpDigParamsNew(mainpkt.tag);
     if ((rc = pgpPrtPkt(&mainpkt, digp)) != RPMPGP_OK) {
 	if (lints)
-	    add_error_lint(digp, rc, lints);
+	    pgpAddErrorLint(digp, lints, rc);
 	pgpDigParamsFree(digp);
 	return -1;
     }
@@ -1108,7 +1033,7 @@ static int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams 
 	*ret = digp;
     } else {
 	if (lints)
-	    add_error_lint(digp, rc, lints);
+	    pgpAddErrorLint(digp, lints, rc);
 	pgpDigParamsFree(digp);
     }
     return rc == RPMPGP_OK ? 0 : -1;
@@ -1243,12 +1168,12 @@ int pgpPrtParams2(const uint8_t * pkts, size_t pktlen, unsigned int pkttype,
     if (lints)
         *lints = NULL;
     if (pktlen > RPM_MAX_OPENPGP_BYTES || decodePkt(pkts, pktlen, &pkt)) {
-	add_error_lint(NULL, RPMPGP_ERROR_CORRUPT_PGP_PACKET, lints);
+	pgpAddErrorLint(NULL, lints, RPMPGP_ERROR_CORRUPT_PGP_PACKET);
 	return -1;
     }
 
     if (pkttype && pkt.tag != pkttype) {
-	add_error_lint(NULL, RPMPGP_ERROR_UNEXPECTED_PGP_PACKET, lints);
+	pgpAddErrorLint(NULL, lints, RPMPGP_ERROR_UNEXPECTED_PGP_PACKET);
 	return -1;
     }
 
@@ -1264,7 +1189,7 @@ int pgpPrtParams2(const uint8_t * pkts, size_t pktlen, unsigned int pkttype,
 	*ret = digp;
     else {
 	if (lints)
-	    add_error_lint(digp, rc, lints);
+	    pgpAddErrorLint(digp, lints, rc);
 	pgpDigParamsFree(digp);
     }
     return rc == RPMPGP_OK ? 0 : -1;
@@ -1284,71 +1209,6 @@ rpmRC pgpPubKeyLint(const uint8_t *pkts, size_t pktslen, char **explanation)
     return res;
 }
 
-static char *format_keyid(pgpKeyID_t keyid, char *userid)
-{
-    char *keyidstr = rpmhex(keyid, sizeof(pgpKeyID_t));
-    if (!userid) {
-	return keyidstr;
-    } else {
-	char *ret = NULL;
-	rasprintf(&ret, "%s (%s)", keyidstr, userid);
-	free(keyidstr);
-	return ret;
-    }
-}
-
-static char *format_time(time_t *t)
-{
-    char dbuf[BUFSIZ];
-    struct tm _tm, *tms;
-    char *ret = NULL;
-
-    tms = localtime_r(t, &_tm);
-    if (!(tms && strftime(dbuf, sizeof(dbuf), "%Y-%m-%d %H:%M:%S", tms) > 0)) {
-	rasprintf(&ret, "Invalid date (%lld)", (long long int)t);
-    } else {
-	ret = xstrdup(dbuf);
-    }
-    return ret;
-}
-
-static void add_key_lint(pgpDigParams key, char **lints, const char *msg)
-{
-    char *keyid = format_keyid(key->signid, key->tag == PGPTAG_PUBLIC_SUBKEY ? NULL : key->userid);
-    char *main_keyid = key->tag == PGPTAG_PUBLIC_SUBKEY ? format_keyid(key->mainid, key->userid) : NULL;
-    *lints = NULL;
-    if (key->tag == PGPTAG_PUBLIC_SUBKEY) {
-	if (key->revoked == 2)
-	    rasprintf(lints, "Key %s is a subkey of key %s, which has been revoked", keyid, main_keyid);
-	else
-	    rasprintf(lints, "Subkey %s of key %s %s", keyid, main_keyid, msg);
-    } else {
-	rasprintf(lints, "Key %s %s", keyid, msg);
-    }
-    free(keyid);
-    free(main_keyid);
-}
-
-static void add_key_expired_lint(pgpDigParams key, char **lints)
-{
-    time_t exptime = (time_t)key->time + key->key_expire;
-    char *expdate = format_time(&exptime);
-    char *msg = NULL;
-    rasprintf(&msg, "expired on %s", expdate);
-    add_key_lint(key, lints, msg);
-    free(msg);
-    free(expdate);
-}
-
-static void add_sig_expired_lint(pgpDigParams sig, char **lints)
-{
-    time_t exptime = (time_t)sig->time + sig->sig_expire;
-    char *expdate = format_time(&exptime);
-    rasprintf(lints, "Signature expired on %s", expdate);
-    free(expdate);
-}
-
-
 rpmRC pgpVerifySignature2(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx, char **lints)
 {
     rpmRC res = RPMRC_FAIL; /* assume failure */
@@ -1365,11 +1225,11 @@ rpmRC pgpVerifySignature2(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx
 	uint32_t now = pgpCurrentTime();
 	if (now < sig->time) {
 	    if (lints)
-		rasprintf(lints, "Signature has been created in the future");
+		pgpAddSigLint(sig, lints, "has been created in the future");
 	    res = RPMRC_NOTTRUSTED;
 	} else if (sig->sig_expire < now - sig->time) {
 	    if (lints)
-		add_sig_expired_lint(sig, lints);
+		pgpAddSigExpiredLint(sig, lints);
 	    res = RPMRC_NOTTRUSTED;
 	}
 	if (rc != RPMPGP_OK)
@@ -1383,23 +1243,23 @@ rpmRC pgpVerifySignature2(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx
     /* now check the meta information of the key */
     if (key->revoked) {
 	if (lints)
-	    add_key_lint(key, lints, "has been revoked");
+	    pgpAddKeyLint(key, lints, "has been revoked");
 	res = RPMRC_NOTTRUSTED;
     } else if ((key->saved & PGPDIG_SAVED_VALID) == 0) {
 	if (lints)
-	    add_key_lint(key, lints, "has no valid binding signature");
+	    pgpAddKeyLint(key, lints, "has no valid binding signature");
 	res = RPMRC_NOTTRUSTED;
     } else if (key->tag == PGPTAG_PUBLIC_SUBKEY && ((key->saved & PGPDIG_SAVED_KEY_FLAGS) == 0 || (key->key_flags & 0x02) == 0)) {
 	if (lints)
-	    add_key_lint(key, lints, "is not suitable for signing");
+	    pgpAddKeyLint(key, lints, "is not suitable for signing");
 	res = RPMRC_NOTTRUSTED;	/* subkey not suitable for signing */
     } else if (key->time > sig->time) {
 	if (lints)
-	    add_key_lint(key, lints, "has been created after the signature");
+	    pgpAddKeyLint(key, lints, "has been created after the signature");
 	res = RPMRC_NOTTRUSTED;
     } else if ((key->saved & PGPDIG_SAVED_KEY_EXPIRE) != 0 && key->key_expire && key->key_expire < sig->time - key->time) {
 	if (lints)
-	    add_key_expired_lint(key, lints);
+	    pgpAddKeyExpiredLint(key, lints);
 	res = RPMRC_NOTTRUSTED;
     }
 exit:

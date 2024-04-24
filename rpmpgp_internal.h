@@ -87,4 +87,23 @@ pgpDigAlg pgpDigAlgNewPubkey(int algo, int curve);
 RPM_GNUC_INTERNAL
 pgpDigAlg pgpDigAlgNewSignature(int algo);
 
+
+/* diagnostics */
+
+RPM_GNUC_INTERNAL
+void pgpAddErrorLint(pgpDigParams digp, char **lints, rpmpgpRC error);
+
+RPM_GNUC_INTERNAL
+void pgpAddKeyLint(pgpDigParams key, char **lints, const char *msg);
+
+RPM_GNUC_INTERNAL
+void pgpAddSigLint(pgpDigParams sig, char **lints, const char *msg);
+
+RPM_GNUC_INTERNAL
+void pgpAddKeyExpiredLint(pgpDigParams key, char **lints);
+
+void pgpAddSigExpiredLint(pgpDigParams sig, char **lints);
+RPM_GNUC_INTERNAL
+
+
 #endif /* _RPMPGP_INTERNAL_H */
