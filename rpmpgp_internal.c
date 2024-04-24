@@ -42,7 +42,6 @@ typedef struct pgpPktSigV4_s {
     uint8_t hashlen[2];	/*!< length of following hashed material. */
 } * pgpPktSigV4;
 
-static rpmpgpRC getKeyID(const uint8_t *h, size_t hlen, pgpKeyID_t keyid);
 
 static inline unsigned int pgpGrab2(const uint8_t *s)
 {
@@ -53,6 +52,12 @@ static inline unsigned int pgpGrab4(const uint8_t *s)
 {
     return s[0] << 24 | s[1] << 16 | s[2] << 8 | s[3];
 }
+
+uint32_t pgpCurrentTime(void) {
+    time_t t = time(NULL);
+    return (uint32_t)t;
+}
+
 
 /** \ingroup rpmpgp
  * Decode length in old format packet headers.
@@ -175,13 +180,208 @@ rpmpgpRC pgpDecodePkt(const uint8_t *p, size_t plen, pgpPkt *pkt)
     return rc;
 }
 
-static rpmpgpRC pgpVersion(const uint8_t *h, size_t hlen, uint8_t *version)
+
+/*
+ * Key/Signature algorithm parameter handling
+ */
+
+pgpDigAlg pgpDigAlgFree(pgpDigAlg alg)
 {
-    if (hlen < 1)
-	return RPMPGP_ERROR_CORRUPT_PGP_PACKET;
-    *version = h[0];
-    return RPMPGP_OK;
+    if (alg) {
+        if (alg->free)
+            alg->free(alg);
+        free(alg);
+    }
+    return NULL;
 }
+
+static inline int pgpMpiLen(const uint8_t *p)
+{
+    int mpi_bits = (p[0] << 8) | p[1];
+    return 2 + ((mpi_bits + 7) >> 3);
+}
+
+static rpmpgpRC processMpis(const int mpis, pgpDigAlg alg,
+		       const uint8_t *p, const uint8_t *const pend)
+{
+    rpmpgpRC rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;		/* assume failure */
+    int i = 0;
+    for (; i < mpis && pend - p >= 2; i++) {
+	int mpil = pgpMpiLen(p);
+	if (mpil < 2 || pend - p < mpil)
+	    return rc;
+	if (alg && alg->setmpi(alg, i, p, mpil))
+	    return rc;
+	p += mpil;
+    }
+
+    /* Does the size and number of MPI's match our expectations? */
+    if (p == pend && i == mpis)
+	rc = RPMPGP_OK;
+    return rc;
+}
+
+static uint8_t curve_oids[] = {
+    PGPCURVE_NIST_P_256,	0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07,
+    PGPCURVE_NIST_P_384,	0x05, 0x2b, 0x81, 0x04, 0x00, 0x22,
+    PGPCURVE_NIST_P_521,	0x05, 0x2b, 0x81, 0x04, 0x00, 0x23,
+    PGPCURVE_BRAINPOOL_P256R1,	0x09, 0x2b, 0x24, 0x03, 0x03, 0x02, 0x08, 0x01, 0x01, 0x07,
+    PGPCURVE_BRAINPOOL_P512R1,	0x09, 0x2b, 0x24, 0x03, 0x03, 0x02, 0x08, 0x01, 0x01, 0x0d,
+    PGPCURVE_ED25519,		0x09, 0x2b, 0x06, 0x01, 0x04, 0x01, 0xda, 0x47, 0x0f, 0x01,
+    PGPCURVE_CURVE25519,	0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0x97, 0x55, 0x01, 0x05, 0x01,
+    0,
+};
+
+static int pgpCurveByOid(const uint8_t *p, int l)
+{
+    uint8_t *curve;
+    for (curve = curve_oids; *curve; curve += 2 + curve[1])
+        if (l == (int)curve[1] && !memcmp(p, curve + 2, l))
+            return (int)curve[0];
+    return 0;
+}
+
+static rpmpgpRC pgpPrtKeyParams(pgpTag tag, const uint8_t *h, size_t hlen,
+		pgpDigParams keyp)
+{
+    rpmpgpRC rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;		/* assume failure */
+    const uint8_t *p;
+    int curve = 0;
+    /* We can't handle more than one key at a time */
+    if (keyp->alg || !keyp->mpi_offset || keyp->mpi_offset > hlen)
+	return  RPMPGP_ERROR_INTERNAL;
+    p = h + keyp->mpi_offset;
+    if (keyp->pubkey_algo == PGPPUBKEYALGO_EDDSA || keyp->pubkey_algo == PGPPUBKEYALGO_ECDSA) {
+	int len = (hlen > 1) ? p[0] : 0;
+	if (len == 0 || len == 0xff || len >= hlen)
+	    return RPMPGP_ERROR_CORRUPT_PGP_PACKET;
+	curve = pgpCurveByOid(p + 1, len);
+	if (!curve)
+	    return RPMPGP_ERROR_UNSUPPORTED_CURVE;
+	p += len + 1;
+    }
+    pgpDigAlg alg = pgpDigAlgNewPubkey(keyp->pubkey_algo, curve);
+    if (alg->mpis < 0)
+	rc = RPMPGP_ERROR_UNSUPPORTED_ALGORITHM;
+    else
+	rc = processMpis(alg->mpis, alg, p, h + hlen);
+    if (rc == RPMPGP_OK)
+	keyp->alg = alg;
+    else
+	pgpDigAlgFree(alg);
+    return rc;
+}
+
+/* validate that the mpi data matches our expectations */
+static rpmpgpRC pgpValidateKeyParamsSize(int pubkey_algo, const uint8_t *p, size_t plen) {
+    rpmpgpRC rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;		/* assume failure */
+    int nmpis = -1;
+
+    switch (pubkey_algo) {
+	case PGPPUBKEYALGO_ECDSA:
+	case PGPPUBKEYALGO_EDDSA:
+	    if (!plen || p[0] == 0x00 || p[0] == 0xff || plen < 1 + p[0])
+		return rc;
+	    plen -= 1 + p[0];
+	    p += 1 + p[0];
+	    nmpis = 1;
+	    break;
+	case PGPPUBKEYALGO_RSA:
+	    nmpis = 2;
+	    break;
+	case PGPPUBKEYALGO_DSA:
+	    nmpis = 4;
+	    break;
+	default:
+	    break;
+    }
+    if (nmpis < 0)
+	return rc;
+    return processMpis(nmpis, NULL, p, p + plen);
+}
+
+rpmpgpRC pgpPrtSigParams(pgpTag tag, const uint8_t *h, size_t hlen,
+		pgpDigParams sigp)
+{
+    rpmpgpRC rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;		/* assume failure */
+    /* We can't handle more than one sig at a time */
+    if (sigp->alg || !sigp->mpi_offset || sigp->mpi_offset > hlen || sigp->tag != PGPTAG_SIGNATURE)
+	return RPMPGP_ERROR_INTERNAL;
+    pgpDigAlg alg = pgpDigAlgNewSignature(sigp->pubkey_algo);
+    if (alg->mpis < 0)
+	rc = RPMPGP_ERROR_UNSUPPORTED_ALGORITHM;
+    else
+	rc = processMpis(alg->mpis, alg, h + sigp->mpi_offset, h + hlen);
+    if (rc == RPMPGP_OK)
+	sigp->alg = alg;
+    else
+	pgpDigAlgFree(alg);
+    return rc;
+}
+
+
+/*
+ *  Key fingerprint calculation
+ */
+
+static rpmpgpRC getKeyFingerprint(const uint8_t *h, size_t hlen,
+			  uint8_t **fp, size_t *fplen)
+{
+    rpmpgpRC rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;		/* assume failure */
+
+    if (hlen == 0)
+	return rc;
+
+    /* We only permit V4 keys, V3 keys are long long since deprecated */
+    switch (h[0]) {
+    case 4:
+      {	pgpPktKeyV4 v = (pgpPktKeyV4)h;
+	if (hlen < sizeof(*v))
+	    return rc;
+	/* Does the size and number of MPI's match our expectations? */
+	if (pgpValidateKeyParamsSize(v->pubkey_algo, (uint8_t *)(v + 1), hlen - sizeof(*v)) == RPMPGP_OK) {
+	    DIGEST_CTX ctx = rpmDigestInit(RPM_HASH_SHA1, RPMDIGEST_NONE);
+	    uint8_t *d = NULL;
+	    size_t dlen = 0;
+	    uint8_t in[3] = { 0x99, (hlen >> 8), hlen };
+
+	    (void) rpmDigestUpdate(ctx, in, 3);
+	    (void) rpmDigestUpdate(ctx, h, hlen);
+	    (void) rpmDigestFinal(ctx, (void **)&d, &dlen, 0);
+
+	    if (dlen == 20) {
+		rc = RPMPGP_OK;
+		*fp = d;
+		*fplen = dlen;
+	    } else {
+		free(d);
+	    }
+	}
+      }	break;
+    default:
+	rc = RPMPGP_ERROR_UNSUPPORTED_VERSION;
+	break;
+    }
+    return rc;
+}
+
+static rpmpgpRC getKeyID(const uint8_t *h, size_t hlen, pgpKeyID_t keyid)
+{
+    uint8_t *fp = NULL;
+    size_t fplen = 0;
+    rpmpgpRC rc = getKeyFingerprint(h, hlen, &fp, &fplen);
+    if (rc == RPMPGP_OK && fp && fplen > 8)
+	memcpy(keyid, (fp + (fplen - 8)), 8);
+    else if (rc == RPMPGP_OK)
+	rc = RPMPGP_ERROR_INTERNAL;
+    free(fp);
+    return rc;
+}
+
+
+/*
+ *  PGP packet data extraction
+ */
 
 static rpmpgpRC pgpPrtSubType(const uint8_t *h, size_t hlen, pgpDigParams _digp, int hashed)
 {
@@ -293,61 +493,6 @@ static rpmpgpRC pgpPrtSubType(const uint8_t *h, size_t hlen, pgpDigParams _digp,
     return RPMPGP_OK;
 }
 
-static inline int pgpMpiLen(const uint8_t *p)
-{
-    int mpi_bits = (p[0] << 8) | p[1];
-    return 2 + ((mpi_bits + 7) >> 3);
-}
-
-pgpDigAlg pgpDigAlgFree(pgpDigAlg alg)
-{
-    if (alg) {
-        if (alg->free)
-            alg->free(alg);
-        free(alg);
-    }
-    return NULL;
-}
-
-static rpmpgpRC processMpis(const int mpis, pgpDigAlg alg,
-		       const uint8_t *p, const uint8_t *const pend)
-{
-    rpmpgpRC rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;		/* assume failure */
-    int i = 0;
-    for (; i < mpis && pend - p >= 2; i++) {
-	int mpil = pgpMpiLen(p);
-	if (mpil < 2 || pend - p < mpil)
-	    return rc;
-	if (alg && alg->setmpi(alg, i, p, mpil))
-	    return rc;
-	p += mpil;
-    }
-
-    /* Does the size and number of MPI's match our expectations? */
-    if (p == pend && i == mpis)
-	rc = RPMPGP_OK;
-    return rc;
-}
-
-rpmpgpRC pgpPrtSigParams(pgpTag tag, const uint8_t *h, size_t hlen,
-		pgpDigParams sigp)
-{
-    rpmpgpRC rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;		/* assume failure */
-    /* We can't handle more than one sig at a time */
-    if (sigp->alg || !sigp->mpi_offset || sigp->mpi_offset > hlen || sigp->tag != PGPTAG_SIGNATURE)
-	return RPMPGP_ERROR_INTERNAL;
-    pgpDigAlg alg = pgpDigAlgNewSignature(sigp->pubkey_algo);
-    if (alg->mpis < 0)
-	rc = RPMPGP_ERROR_UNSUPPORTED_ALGORITHM;
-    else
-	rc = processMpis(alg->mpis, alg, h + sigp->mpi_offset, h + hlen);
-    if (rc == RPMPGP_OK)
-	sigp->alg = alg;
-    else
-	pgpDigAlgFree(alg);
-    return rc;
-}
-
 rpmpgpRC pgpPrtSigNoParams(pgpTag tag, const uint8_t *h, size_t hlen,
 		     pgpDigParams _digp)
 {
@@ -358,8 +503,9 @@ rpmpgpRC pgpPrtSigNoParams(pgpTag tag, const uint8_t *h, size_t hlen,
     if (_digp->version || _digp->saved || _digp->tag != PGPTAG_SIGNATURE || tag != _digp->tag)
 	return RPMPGP_ERROR_INTERNAL;
 
-    if (pgpVersion(h, hlen, &_digp->version))
+    if (hlen == 0)
 	return RPMPGP_ERROR_CORRUPT_PGP_PACKET;
+    _digp->version = h[0];
 
     switch (_digp->version) {
     case 3:
@@ -438,141 +584,6 @@ rpmpgpRC pgpPrtSig(pgpTag tag, const uint8_t *h, size_t hlen,
     return rc;
 }
 
-static uint8_t curve_oids[] = {
-    PGPCURVE_NIST_P_256,	0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07,
-    PGPCURVE_NIST_P_384,	0x05, 0x2b, 0x81, 0x04, 0x00, 0x22,
-    PGPCURVE_NIST_P_521,	0x05, 0x2b, 0x81, 0x04, 0x00, 0x23,
-    PGPCURVE_BRAINPOOL_P256R1,	0x09, 0x2b, 0x24, 0x03, 0x03, 0x02, 0x08, 0x01, 0x01, 0x07,
-    PGPCURVE_BRAINPOOL_P512R1,	0x09, 0x2b, 0x24, 0x03, 0x03, 0x02, 0x08, 0x01, 0x01, 0x0d,
-    PGPCURVE_ED25519,		0x09, 0x2b, 0x06, 0x01, 0x04, 0x01, 0xda, 0x47, 0x0f, 0x01,
-    PGPCURVE_CURVE25519,	0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0x97, 0x55, 0x01, 0x05, 0x01,
-    0,
-};
-
-static int pgpCurveByOid(const uint8_t *p, int l)
-{
-    uint8_t *curve;
-    for (curve = curve_oids; *curve; curve += 2 + curve[1])
-        if (l == (int)curve[1] && !memcmp(p, curve + 2, l))
-            return (int)curve[0];
-    return 0;
-}
-
-static rpmpgpRC pgpPrtKeyParams(pgpTag tag, const uint8_t *h, size_t hlen,
-		pgpDigParams keyp)
-{
-    rpmpgpRC rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;		/* assume failure */
-    const uint8_t *p;
-    int curve = 0;
-    /* We can't handle more than one key at a time */
-    if (keyp->alg || !keyp->mpi_offset || keyp->mpi_offset > hlen)
-	return  RPMPGP_ERROR_INTERNAL;
-    p = h + keyp->mpi_offset;
-    if (keyp->pubkey_algo == PGPPUBKEYALGO_EDDSA || keyp->pubkey_algo == PGPPUBKEYALGO_ECDSA) {
-	int len = (hlen > 1) ? p[0] : 0;
-	if (len == 0 || len == 0xff || len >= hlen)
-	    return RPMPGP_ERROR_CORRUPT_PGP_PACKET;
-	curve = pgpCurveByOid(p + 1, len);
-	if (!curve)
-	    return RPMPGP_ERROR_UNSUPPORTED_CURVE;
-	p += len + 1;
-    }
-    pgpDigAlg alg = pgpDigAlgNewPubkey(keyp->pubkey_algo, curve);
-    if (alg->mpis < 0)
-	rc = RPMPGP_ERROR_UNSUPPORTED_ALGORITHM;
-    else
-	rc = processMpis(alg->mpis, alg, p, h + hlen);
-    if (rc == RPMPGP_OK)
-	keyp->alg = alg;
-    else
-	pgpDigAlgFree(alg);
-    return rc;
-}
-
-/* validate that the mpi data matches our expectations */
-static rpmpgpRC pgpValidateKeyParamsSize(int pubkey_algo, const uint8_t *p, size_t plen) {
-    rpmpgpRC rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;		/* assume failure */
-    int nmpis = -1;
-
-    switch (pubkey_algo) {
-	case PGPPUBKEYALGO_ECDSA:
-	case PGPPUBKEYALGO_EDDSA:
-	    if (!plen || p[0] == 0x00 || p[0] == 0xff || plen < 1 + p[0])
-		return rc;
-	    plen -= 1 + p[0];
-	    p += 1 + p[0];
-	    nmpis = 1;
-	    break;
-	case PGPPUBKEYALGO_RSA:
-	    nmpis = 2;
-	    break;
-	case PGPPUBKEYALGO_DSA:
-	    nmpis = 4;
-	    break;
-	default:
-	    break;
-    }
-    if (nmpis < 0)
-	return rc;
-    return processMpis(nmpis, NULL, p, p + plen);
-}
-
-static rpmpgpRC getKeyFingerprint(const uint8_t *h, size_t hlen,
-			  uint8_t **fp, size_t *fplen)
-{
-    rpmpgpRC rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;		/* assume failure */
-    uint8_t version = 0;
-
-    if (pgpVersion(h, hlen, &version))
-	return rc;
-
-    /* We only permit V4 keys, V3 keys are long long since deprecated */
-    switch (version) {
-    case 4:
-      {	pgpPktKeyV4 v = (pgpPktKeyV4)h;
-	if (hlen < sizeof(*v))
-	    return rc;
-	/* Does the size and number of MPI's match our expectations? */
-	if (pgpValidateKeyParamsSize(v->pubkey_algo, (uint8_t *)(v + 1), hlen - sizeof(*v)) == RPMPGP_OK) {
-	    DIGEST_CTX ctx = rpmDigestInit(RPM_HASH_SHA1, RPMDIGEST_NONE);
-	    uint8_t *d = NULL;
-	    size_t dlen = 0;
-	    uint8_t in[3] = { 0x99, (hlen >> 8), hlen };
-
-	    (void) rpmDigestUpdate(ctx, in, 3);
-	    (void) rpmDigestUpdate(ctx, h, hlen);
-	    (void) rpmDigestFinal(ctx, (void **)&d, &dlen, 0);
-
-	    if (dlen == 20) {
-		rc = RPMPGP_OK;
-		*fp = d;
-		*fplen = dlen;
-	    } else {
-		free(d);
-	    }
-	}
-      }	break;
-    default:
-	rc = RPMPGP_ERROR_UNSUPPORTED_VERSION;
-	break;
-    }
-    return rc;
-}
-
-static rpmpgpRC getKeyID(const uint8_t *h, size_t hlen, pgpKeyID_t keyid)
-{
-    uint8_t *fp = NULL;
-    size_t fplen = 0;
-    rpmpgpRC rc = getKeyFingerprint(h, hlen, &fp, &fplen);
-    if (rc == RPMPGP_OK && fp && fplen > 8)
-	memcpy(keyid, (fp + (fplen - 8)), 8);
-    else if (rc == RPMPGP_OK)
-	rc = RPMPGP_ERROR_INTERNAL;
-    free(fp);
-    return rc;
-}
-
-
 rpmpgpRC pgpPrtKey(pgpTag tag, const uint8_t *h, size_t hlen,
 		     pgpDigParams _digp)
 {
@@ -583,8 +594,9 @@ rpmpgpRC pgpPrtKey(pgpTag tag, const uint8_t *h, size_t hlen,
     if  ((_digp->tag != PGPTAG_PUBLIC_KEY && _digp->tag != PGPTAG_PUBLIC_SUBKEY) || tag != _digp->tag)
 	return RPMPGP_ERROR_INTERNAL;
 
-    if (pgpVersion(h, hlen, &_digp->version))
+    if (hlen == 0)
 	return RPMPGP_ERROR_CORRUPT_PGP_PACKET;
+    _digp->version = h[0];
 
     /* We only permit V4 keys, V3 keys are long long since deprecated */
     switch (_digp->version) {
@@ -607,6 +619,7 @@ rpmpgpRC pgpPrtKey(pgpTag tag, const uint8_t *h, size_t hlen,
     /* read mpi data if there was no error */
     if (rc == RPMPGP_OK)
 	rc = pgpPrtKeyParams(tag, h, hlen, _digp);
+
     /* calculate the key id if we could parse the key */
     if (rc == RPMPGP_OK) {
 	if ((rc = getKeyID(h, hlen, _digp->signid)) == RPMPGP_OK)
@@ -626,10 +639,10 @@ rpmpgpRC pgpPrtUserID(pgpTag tag, const uint8_t *h, size_t hlen,
     return RPMPGP_OK;
 }
 
-uint32_t pgpCurrentTime(void) {
-    time_t t = time(NULL);
-    return (uint32_t)t;
-}
+
+/*
+ * signature verification
+ */
 
 rpmpgpRC pgpVerifySignatureRaw(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx)
 {
@@ -687,7 +700,9 @@ exit:
 }
 
 
-/* public interface functions */
+/*
+ * public interface functions
+ */
 
 int pgpPrtParams2(const uint8_t * pkts, size_t pktlen, unsigned int pkttype,
 		 pgpDigParams * ret, char **lints)
