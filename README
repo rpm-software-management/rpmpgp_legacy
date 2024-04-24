@@ -9,3 +9,15 @@ sources and re-run cmake with `-DWITH_SEQUOIA=OFF -DWITH_LEGACY_OPENPGP=ON`
 Use entirely at your own risk, the RPM project does not provide support
 for this parser.
 
+Supported public key algorithms:
+  * RSA
+  * DSA
+  * ECDSA (NIST P-256, NIST P-384, NIST P-521)
+  * EDDSA (Ed25519)
+
+Supported PGP features:
+  * subkeys
+  * key expiry
+  * key revokation
+  * signature expiry
+
