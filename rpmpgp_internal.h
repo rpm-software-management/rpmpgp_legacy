@@ -96,17 +96,16 @@ rpmpgpRC pgpDecodePkt(const uint8_t *p, size_t plen, pgpPkt *pkt);
 
 /* allocation */
 RPM_GNUC_INTERNAL
-pgpDigAlg pgpDigAlgFree(pgpDigAlg alg);
-
-RPM_GNUC_INTERNAL
 pgpDigParams pgpDigParamsNew(uint8_t tag);
 
 RPM_GNUC_INTERNAL
-pgpDigAlg pgpDigAlgNewPubkey(int algo, int curve);
+pgpDigAlg pgpDigAlgFree(pgpDigAlg alg);
 
 RPM_GNUC_INTERNAL
-pgpDigAlg pgpDigAlgNewSignature(int algo);
+void pgpDigAlgInitPubkey(pgpDigAlg alg, int algo, int curve);
 
+RPM_GNUC_INTERNAL
+void pgpDigAlgInitSignature(pgpDigAlg alg, int algo);
 
 /* pgp packet data extraction */
 RPM_GNUC_INTERNAL

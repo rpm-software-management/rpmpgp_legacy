@@ -185,6 +185,14 @@ rpmpgpRC pgpDecodePkt(const uint8_t *p, size_t plen, pgpPkt *pkt)
  * Key/Signature algorithm parameter handling
  */
 
+static pgpDigAlg pgpDigAlgNew(void)
+{
+    pgpDigAlg alg;
+    alg = xcalloc(1, sizeof(*alg));
+    alg->mpis = -1;
+    return alg;
+}
+
 pgpDigAlg pgpDigAlgFree(pgpDigAlg alg)
 {
     if (alg) {
@@ -260,7 +268,8 @@ static rpmpgpRC pgpPrtKeyParams(pgpTag tag, const uint8_t *h, size_t hlen,
 	    return RPMPGP_ERROR_UNSUPPORTED_CURVE;
 	p += len + 1;
     }
-    pgpDigAlg alg = pgpDigAlgNewPubkey(keyp->pubkey_algo, curve);
+    pgpDigAlg alg = pgpDigAlgNew();
+    pgpDigAlgInitPubkey(alg, keyp->pubkey_algo, curve);
     if (alg->mpis < 0)
 	rc = RPMPGP_ERROR_UNSUPPORTED_ALGORITHM;
     else
@@ -307,7 +316,8 @@ rpmpgpRC pgpPrtSigParams(pgpTag tag, const uint8_t *h, size_t hlen,
     /* We can't handle more than one sig at a time */
     if (sigp->alg || !sigp->mpi_offset || sigp->mpi_offset > hlen || sigp->tag != PGPTAG_SIGNATURE)
 	return RPMPGP_ERROR_INTERNAL;
-    pgpDigAlg alg = pgpDigAlgNewSignature(sigp->pubkey_algo);
+    pgpDigAlg alg = pgpDigAlgNew();
+    pgpDigAlgInitSignature(alg, sigp->pubkey_algo);
     if (alg->mpis < 0)
 	rc = RPMPGP_ERROR_UNSUPPORTED_ALGORITHM;
     else

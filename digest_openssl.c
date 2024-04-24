@@ -825,10 +825,8 @@ static int pgpSupportedCurve(int algo, int curve)
 }
 
 /****************************** PGP **************************************/
-pgpDigAlg pgpDigAlgNewPubkey(int algo, int curve)
+void pgpDigAlgInitPubkey(pgpDigAlg ka, int algo, int curve)
 {
-    pgpDigAlg ka = xcalloc(1, sizeof(*ka));;
-
     switch (algo) {
     case PGPPUBKEYALGO_RSA:
         ka->setmpi = pgpSetKeyMpiRSA;
@@ -871,14 +869,10 @@ pgpDigAlg pgpDigAlgNewPubkey(int algo, int curve)
     }
 
     ka->verify = pgpVerifyNULL; /* keys can't be verified */
-
-    return ka;
 }
 
-pgpDigAlg pgpDigAlgNewSignature(int algo)
+void pgpDigAlgInitSignature(pgpDigAlg sa, int algo)
 {
-    pgpDigAlg sa = xcalloc(1, sizeof(*sa));
-
     switch (algo) {
     case PGPPUBKEYALGO_RSA:
         sa->setmpi = pgpSetSigMpiRSA;
@@ -912,5 +906,4 @@ pgpDigAlg pgpDigAlgNewSignature(int algo)
         sa->mpis = -1;
         break;
     }
-    return sa;
 }
