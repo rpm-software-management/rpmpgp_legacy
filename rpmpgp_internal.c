@@ -59,6 +59,13 @@ uint32_t pgpCurrentTime(void) {
 }
 
 
+/*
+ * PGP packet decoding
+ *
+ * Note that we reject indefinite length/partial bodies and lengths >= 16 MByte
+ * right away so that we do not have to worry about integer overflows.
+ */
+
 /** \ingroup rpmpgp
  * Decode length in old format packet headers.
  * @param s		pointer to packet (including tag)
