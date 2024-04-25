@@ -114,6 +114,7 @@ void pgpAddLint(pgpDigParams digp, char **lints, rpmpgpRC error)
 	case RPMPGP_ERROR_SIGNATURE_EXPIRED:
 	    exp_msg = format_expired(digp->time, digp->sig_expire);
 	    pgpAddSigLint(digp, lints, exp_msg);
+	    free(exp_msg);
 	    return;
 	default:
 	    break;
