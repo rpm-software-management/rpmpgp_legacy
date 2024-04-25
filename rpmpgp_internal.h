@@ -22,7 +22,15 @@ typedef enum rpmpgpRC_e {
     RPMPGP_ERROR_SELFSIG_VERIFICATION	= 21,
     RPMPGP_ERROR_SIGNATURE_VERIFICATION	= 22,
     RPMPGP_ERROR_BAD_PUBKEY		= 23,
-    RPMPGP_ERROR_BAD_SIGNATURE		= 24
+    RPMPGP_ERROR_BAD_SIGNATURE		= 24,
+    RPMPGP_ERROR_SIGNATURE_FROM_FUTURE  = 25,
+    RPMPGP_ERROR_SIGNATURE_EXPIRED	= 26,
+    RPMPGP_ERROR_KEY_EXPIRED		= 27,
+    RPMPGP_ERROR_KEY_REVOKED		= 28,
+    RPMPGP_ERROR_PRIMARY_REVOKED	= 29,
+    RPMPGP_ERROR_KEY_NOT_VALID		= 30,
+    RPMPGP_ERROR_KEY_NO_SIGNING		= 31,
+    RPMPGP_ERROR_KEY_CREATED_AFTER_SIG	= 32
 } rpmpgpRC;
 
 typedef struct pgpDigAlg_s * pgpDigAlg;
@@ -123,23 +131,16 @@ rpmpgpRC pgpPrtSigParams(pgpTag tag, const uint8_t *h, size_t hlen, pgpDigParams
 RPM_GNUC_INTERNAL
 rpmpgpRC pgpPrtUserID(pgpTag tag, const uint8_t *h, size_t hlen, pgpDigParams _digp);
 
+RPM_GNUC_INTERNAL
+rpmpgpRC pgpGetKeyFingerprint(const uint8_t *h, size_t hlen, uint8_t **fp, size_t *fplen);
+
+RPM_GNUC_INTERNAL
+rpmpgpRC pgpGetKeyID(const uint8_t *h, size_t hlen, pgpKeyID_t keyid);
+
 
 /* diagnostics */
 RPM_GNUC_INTERNAL
-void pgpAddErrorLint(pgpDigParams digp, char **lints, rpmpgpRC error);
-
-RPM_GNUC_INTERNAL
-void pgpAddKeyLint(pgpDigParams key, char **lints, const char *msg);
-
-RPM_GNUC_INTERNAL
-void pgpAddSigLint(pgpDigParams sig, char **lints, const char *msg);
-
-RPM_GNUC_INTERNAL
-void pgpAddKeyExpiredLint(pgpDigParams key, char **lints);
-
-RPM_GNUC_INTERNAL
-void pgpAddSigExpiredLint(pgpDigParams sig, char **lints);
-
+void pgpAddLint(pgpDigParams digp, char **lints, rpmpgpRC error);
 
 /* pubkey parsing */
 RPM_GNUC_INTERNAL

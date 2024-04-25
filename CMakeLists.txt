@@ -6,7 +6,7 @@ option(WITH_LEGACY_OPENPGP "Use legacy OpenPGP parser (DEPRECATED)" OFF)
 
 target_sources(rpmpgp_legacy PRIVATE
 	rpmpgp_internal.h rpmpgp_internal.c rpmpgp_internal_armor.c
-	rpmpgp_internal_dig.c rpmpgp_internal_lint.c
+	rpmpgp_internal_api.c rpmpgp_internal_lint.c
 	rpmpgp_internal_pubkey.c
 )
 if (WITH_OPENSSL)

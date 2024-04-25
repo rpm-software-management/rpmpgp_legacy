@@ -1,6 +1,6 @@
 /** \ingroup rpmio signature
- * \file rpmio/rpmpgp_internal_dig.c
- * Accessor functions for pgpDigParams
+ * \file rpmio/rpmpgp_internal_api.c
+ * Public API for the PGP functions
  */
 
 #include "system.h"
@@ -115,11 +115,11 @@ rpmRC pgpVerifySignature2(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx
 	uint32_t now = pgpCurrentTime();
 	if (now < sig->time) {
 	    if (lints)
-		pgpAddSigLint(sig, lints, "has been created in the future");
+		pgpAddLint(sig, lints, RPMPGP_ERROR_SIGNATURE_FROM_FUTURE);
 	    res = RPMRC_NOTTRUSTED;
 	} else if (sig->sig_expire < now - sig->time) {
 	    if (lints)
-		pgpAddSigExpiredLint(sig, lints);
+		pgpAddLint(sig, lints, RPMPGP_ERROR_SIGNATURE_EXPIRED);
 	    res = RPMRC_NOTTRUSTED;
 	}
 	if (res != RPMRC_OK)
@@ -133,23 +133,23 @@ rpmRC pgpVerifySignature2(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx
     /* now check the meta information of the key */
     if (key->revoked) {
 	if (lints)
-	    pgpAddKeyLint(key, lints, "has been revoked");
+	    pgpAddLint(key, lints, key->revoked == 2 ? RPMPGP_ERROR_PRIMARY_REVOKED : RPMPGP_ERROR_KEY_REVOKED);
 	res = RPMRC_NOTTRUSTED;
     } else if ((key->saved & PGPDIG_SAVED_VALID) == 0) {
 	if (lints)
-	    pgpAddKeyLint(key, lints, "has no valid binding signature");
+	    pgpAddLint(key, lints, RPMPGP_ERROR_KEY_NOT_VALID);
 	res = RPMRC_NOTTRUSTED;
     } else if (key->tag == PGPTAG_PUBLIC_SUBKEY && ((key->saved & PGPDIG_SAVED_KEY_FLAGS) == 0 || (key->key_flags & 0x02) == 0)) {
 	if (lints)
-	    pgpAddKeyLint(key, lints, "is not suitable for signing");
+	    pgpAddLint(key, lints, RPMPGP_ERROR_KEY_NO_SIGNING);
 	res = RPMRC_NOTTRUSTED;	/* subkey not suitable for signing */
     } else if (key->time > sig->time) {
 	if (lints)
-	    pgpAddKeyLint(key, lints, "has been created after the signature");
+	    pgpAddLint(key, lints, RPMPGP_ERROR_KEY_CREATED_AFTER_SIG);
 	res = RPMRC_NOTTRUSTED;
     } else if ((key->saved & PGPDIG_SAVED_KEY_EXPIRE) != 0 && key->key_expire && key->key_expire < sig->time - key->time) {
 	if (lints)
-	    pgpAddKeyExpiredLint(key, lints);
+	    pgpAddLint(key, lints, RPMPGP_ERROR_KEY_EXPIRED);
 	res = RPMRC_NOTTRUSTED;
     }
 exit:
@@ -159,5 +159,100 @@ exit:
 rpmRC pgpVerifySignature(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx)
 {
     return pgpVerifySignature2(key, sig, hashctx, NULL);
+}
+
+int pgpPrtParams2(const uint8_t * pkts, size_t pktlen, unsigned int pkttype,
+		 pgpDigParams * ret, char **lints)
+{
+    pgpDigParams digp = NULL;
+    rpmpgpRC rc;
+    pgpPkt pkt;
+
+    if (lints)
+        *lints = NULL;
+    if (pktlen > RPM_MAX_OPENPGP_BYTES || pgpDecodePkt(pkts, pktlen, &pkt)) {
+	pgpAddLint(NULL, lints, RPMPGP_ERROR_CORRUPT_PGP_PACKET);
+	return -1;
+    }
+
+    if (pkttype && pkt.tag != pkttype) {
+	pgpAddLint(NULL, lints, RPMPGP_ERROR_UNEXPECTED_PGP_PACKET);
+	return -1;
+    }
+
+    if (pkt.tag == PGPTAG_PUBLIC_KEY)
+	return pgpPrtParamsPubkey(pkts, pktlen, ret, lints);	/* switch to specialized pubkey implementation */
+
+    if (pkt.tag != PGPTAG_SIGNATURE) {
+	pgpAddLint(NULL, lints, RPMPGP_ERROR_UNEXPECTED_PGP_PACKET);
+	return -1;
+    }
+
+    /* parse the signature */
+    digp = pgpDigParamsNew(pkt.tag);
+    rc = pgpPrtSig(pkt.tag, pkt.body, pkt.blen, digp);
+    if (rc == RPMPGP_OK && (pkt.body - pkt.head) + pkt.blen != pktlen)
+	rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET; 		/* trailing data is an error */
+
+    if (ret && rc == RPMPGP_OK)
+	*ret = digp;
+    else {
+	if (lints)
+	    pgpAddLint(digp, lints, rc);
+	pgpDigParamsFree(digp);
+    }
+    return rc == RPMPGP_OK ? 0 : -1;
+}
+
+int pgpPrtParams(const uint8_t * pkts, size_t pktlen, unsigned int pkttype,
+                  pgpDigParams * ret)
+{
+    return pgpPrtParams2(pkts, pktlen, pkttype, ret, NULL);
+}
+
+rpmRC pgpPubKeyLint(const uint8_t *pkts, size_t pktslen, char **explanation)
+{
+    pgpDigParams digp = NULL;
+    rpmRC res = pgpPrtParamsPubkey(pkts, pktslen, &digp, explanation) ? RPMRC_FAIL : RPMRC_OK;
+    pgpDigParamsFree(digp);
+    return res;
+}
+
+int pgpPubKeyCertLen(const uint8_t *pkts, size_t pktslen, size_t *certlen)
+{
+    const uint8_t *p = pkts;
+    const uint8_t *pend = pkts + pktslen;
+    pgpPkt pkt;
+
+    while (p < pend) {
+	if (pgpDecodePkt(p, (pend - p), &pkt))
+	    return -1;
+	if (pkt.tag == PGPTAG_PUBLIC_KEY && pkts != p) {
+	    *certlen = p - pkts;
+	    return 0;
+	}
+	p += (pkt.body - pkt.head) + pkt.blen;
+    }
+    *certlen = pktslen;
+    return 0;
+}
+
+int pgpPubkeyKeyID(const uint8_t * pkts, size_t pktslen, pgpKeyID_t keyid)
+{
+    pgpPkt pkt;
+
+    if (pgpDecodePkt(pkts, pktslen, &pkt))
+	return -1;
+    return pgpGetKeyID(pkt.body, pkt.blen, keyid) == RPMPGP_OK ? 0 : -1;
+}
+
+int pgpPubkeyFingerprint(const uint8_t * pkts, size_t pktslen,
+                         uint8_t **fp, size_t *fplen)
+{
+    pgpPkt pkt;
+
+    if (pgpDecodePkt(pkts, pktslen, &pkt))
+	return -1;
+    return pgpGetKeyFingerprint(pkt.body, pkt.blen, fp, fplen) == RPMPGP_OK ? 0 : -1;
 }
 

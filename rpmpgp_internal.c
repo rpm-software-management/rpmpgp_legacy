@@ -342,7 +342,7 @@ rpmpgpRC pgpPrtSigParams(pgpTag tag, const uint8_t *h, size_t hlen,
  *  Key fingerprint calculation
  */
 
-static rpmpgpRC getKeyFingerprint(const uint8_t *h, size_t hlen,
+rpmpgpRC pgpGetKeyFingerprint(const uint8_t *h, size_t hlen,
 			  uint8_t **fp, size_t *fplen)
 {
     rpmpgpRC rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;		/* assume failure */
@@ -383,11 +383,11 @@ static rpmpgpRC getKeyFingerprint(const uint8_t *h, size_t hlen,
     return rc;
 }
 
-static rpmpgpRC getKeyID(const uint8_t *h, size_t hlen, pgpKeyID_t keyid)
+rpmpgpRC pgpGetKeyID(const uint8_t *h, size_t hlen, pgpKeyID_t keyid)
 {
     uint8_t *fp = NULL;
     size_t fplen = 0;
-    rpmpgpRC rc = getKeyFingerprint(h, hlen, &fp, &fplen);
+    rpmpgpRC rc = pgpGetKeyFingerprint(h, hlen, &fp, &fplen);
     if (rc == RPMPGP_OK && fp && fplen > 8)
 	memcpy(keyid, (fp + (fplen - 8)), 8);
     else if (rc == RPMPGP_OK)
@@ -640,7 +640,7 @@ rpmpgpRC pgpPrtKey(pgpTag tag, const uint8_t *h, size_t hlen,
 
     /* calculate the key id if we could parse the key */
     if (rc == RPMPGP_OK) {
-	if ((rc = getKeyID(h, hlen, _digp->signid)) == RPMPGP_OK)
+	if ((rc = pgpGetKeyID(h, hlen, _digp->signid)) == RPMPGP_OK)
 	    _digp->saved |= PGPDIG_SAVED_ID;
     }
     return rc;
@@ -715,106 +715,5 @@ exit:
     free(hash);
     rpmDigestFinal(ctx, NULL, NULL, 0);
     return rc;
-}
-
-
-/*
- * public interface functions
- */
-
-int pgpPrtParams2(const uint8_t * pkts, size_t pktlen, unsigned int pkttype,
-		 pgpDigParams * ret, char **lints)
-{
-    pgpDigParams digp = NULL;
-    rpmpgpRC rc;
-    pgpPkt pkt;
-
-    if (lints)
-        *lints = NULL;
-    if (pktlen > RPM_MAX_OPENPGP_BYTES || pgpDecodePkt(pkts, pktlen, &pkt)) {
-	pgpAddErrorLint(NULL, lints, RPMPGP_ERROR_CORRUPT_PGP_PACKET);
-	return -1;
-    }
-
-    if (pkttype && pkt.tag != pkttype) {
-	pgpAddErrorLint(NULL, lints, RPMPGP_ERROR_UNEXPECTED_PGP_PACKET);
-	return -1;
-    }
-
-    if (pkt.tag == PGPTAG_PUBLIC_KEY)
-	return pgpPrtParamsPubkey(pkts, pktlen, ret, lints);	/* switch to specialized pubkey implementation */
-
-    if (pkt.tag != PGPTAG_SIGNATURE) {
-	pgpAddErrorLint(NULL, lints, RPMPGP_ERROR_UNEXPECTED_PGP_PACKET);
-	return -1;
-    }
-
-    /* parse the signature */
-    digp = pgpDigParamsNew(pkt.tag);
-    rc = pgpPrtSig(pkt.tag, pkt.body, pkt.blen, digp);
-    if (rc == RPMPGP_OK && (pkt.body - pkt.head) + pkt.blen != pktlen)
-	rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET; 		/* trailing data is an error */
-
-    if (ret && rc == RPMPGP_OK)
-	*ret = digp;
-    else {
-	if (lints)
-	    pgpAddErrorLint(digp, lints, rc);
-	pgpDigParamsFree(digp);
-    }
-    return rc == RPMPGP_OK ? 0 : -1;
-}
-
-int pgpPrtParams(const uint8_t * pkts, size_t pktlen, unsigned int pkttype,
-                  pgpDigParams * ret)
-{
-    return pgpPrtParams2(pkts, pktlen, pkttype, ret, NULL);
-}
-
-rpmRC pgpPubKeyLint(const uint8_t *pkts, size_t pktslen, char **explanation)
-{
-    pgpDigParams digp = NULL;
-    rpmRC res = pgpPrtParamsPubkey(pkts, pktslen, &digp, explanation) ? RPMRC_FAIL : RPMRC_OK;
-    pgpDigParamsFree(digp);
-    return res;
-}
-
-int pgpPubKeyCertLen(const uint8_t *pkts, size_t pktslen, size_t *certlen)
-{
-    const uint8_t *p = pkts;
-    const uint8_t *pend = pkts + pktslen;
-    pgpPkt pkt;
-
-    while (p < pend) {
-	if (pgpDecodePkt(p, (pend - p), &pkt))
-	    return -1;
-	if (pkt.tag == PGPTAG_PUBLIC_KEY && pkts != p) {
-	    *certlen = p - pkts;
-	    return 0;
-	}
-	p += (pkt.body - pkt.head) + pkt.blen;
-    }
-
-    *certlen = pktslen;
-    return 0;
-}
-
-int pgpPubkeyKeyID(const uint8_t * pkts, size_t pktslen, pgpKeyID_t keyid)
-{
-    pgpPkt pkt;
-
-    if (pgpDecodePkt(pkts, pktslen, &pkt))
-	return -1;
-    return getKeyID(pkt.body, pkt.blen, keyid) == RPMPGP_OK ? 0 : -1;
-}
-
-int pgpPubkeyFingerprint(const uint8_t * pkts, size_t pktslen,
-                         uint8_t **fp, size_t *fplen)
-{
-    pgpPkt pkt;
-
-    if (pgpDecodePkt(pkts, pktslen, &pkt))
-	return -1;
-    return getKeyFingerprint(pkt.body, pkt.blen, fp, fplen) == RPMPGP_OK ? 0 : -1;
 }
 

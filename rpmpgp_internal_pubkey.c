@@ -132,11 +132,11 @@ int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams * ret,
 
     /* parse the main pubkey */
     if (pktlen > RPM_MAX_OPENPGP_BYTES || pgpDecodePkt(p, (pend - p), &mainpkt)) {
-	pgpAddErrorLint(NULL, lints, RPMPGP_ERROR_CORRUPT_PGP_PACKET);
+	pgpAddLint(NULL, lints, RPMPGP_ERROR_CORRUPT_PGP_PACKET);
 	return -1;
     }
     if (mainpkt.tag != PGPTAG_PUBLIC_KEY) {
-	pgpAddErrorLint(NULL, lints, RPMPGP_ERROR_UNEXPECTED_PGP_PACKET);
+	pgpAddLint(NULL, lints, RPMPGP_ERROR_UNEXPECTED_PGP_PACKET);
 	return -1;	/* pubkey packet must come first */
     }
     p += (mainpkt.body - mainpkt.head) + mainpkt.blen;
@@ -145,7 +145,7 @@ int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams * ret,
     digp = pgpDigParamsNew(mainpkt.tag);
     if ((rc = pgpPrtKey(mainpkt.tag, mainpkt.body, mainpkt.blen, digp)) != RPMPGP_OK) {
 	if (lints)
-	    pgpAddErrorLint(digp, lints, rc);
+	    pgpAddLint(digp, lints, rc);
 	pgpDigParamsFree(digp);
 	return -1;
     }
@@ -324,7 +324,7 @@ int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams * ret,
 	*ret = digp;
     } else {
 	if (lints)
-	    pgpAddErrorLint(digp, lints, rc);
+	    pgpAddLint(digp, lints, rc);
 	pgpDigParamsFree(digp);
     }
     return rc == RPMPGP_OK ? 0 : -1;
