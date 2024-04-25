@@ -779,67 +779,6 @@ rpmRC pgpPubKeyLint(const uint8_t *pkts, size_t pktslen, char **explanation)
     return res;
 }
 
-rpmRC pgpVerifySignature2(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx, char **lints)
-{
-    rpmRC res;
-    if (lints)
-        *lints = NULL;
-    
-    res = pgpVerifySignatureRaw(key, sig, hashctx) == RPMPGP_OK ? RPMRC_OK : RPMRC_FAIL;
-    if (res != RPMRC_OK)
-	goto exit;
-
-    /* now check the meta information of the signature */
-    if ((sig->saved & PGPDIG_SAVED_SIG_EXPIRE) != 0 && sig->sig_expire) {
-	uint32_t now = pgpCurrentTime();
-	if (now < sig->time) {
-	    if (lints)
-		pgpAddSigLint(sig, lints, "has been created in the future");
-	    res = RPMRC_NOTTRUSTED;
-	} else if (sig->sig_expire < now - sig->time) {
-	    if (lints)
-		pgpAddSigExpiredLint(sig, lints);
-	    res = RPMRC_NOTTRUSTED;
-	}
-	if (res != RPMRC_OK)
-	    goto exit;
-    }
-    if (!key) {
-	/* that's all we can do */
-	res = RPMRC_NOKEY;
-	goto exit;
-    }
-    /* now check the meta information of the key */
-    if (key->revoked) {
-	if (lints)
-	    pgpAddKeyLint(key, lints, "has been revoked");
-	res = RPMRC_NOTTRUSTED;
-    } else if ((key->saved & PGPDIG_SAVED_VALID) == 0) {
-	if (lints)
-	    pgpAddKeyLint(key, lints, "has no valid binding signature");
-	res = RPMRC_NOTTRUSTED;
-    } else if (key->tag == PGPTAG_PUBLIC_SUBKEY && ((key->saved & PGPDIG_SAVED_KEY_FLAGS) == 0 || (key->key_flags & 0x02) == 0)) {
-	if (lints)
-	    pgpAddKeyLint(key, lints, "is not suitable for signing");
-	res = RPMRC_NOTTRUSTED;	/* subkey not suitable for signing */
-    } else if (key->time > sig->time) {
-	if (lints)
-	    pgpAddKeyLint(key, lints, "has been created after the signature");
-	res = RPMRC_NOTTRUSTED;
-    } else if ((key->saved & PGPDIG_SAVED_KEY_EXPIRE) != 0 && key->key_expire && key->key_expire < sig->time - key->time) {
-	if (lints)
-	    pgpAddKeyExpiredLint(key, lints);
-	res = RPMRC_NOTTRUSTED;
-    }
-exit:
-    return res;
-}
-
-rpmRC pgpVerifySignature(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx)
-{
-    return pgpVerifySignature2(key, sig, hashctx, NULL);
-}
-
 int pgpPubKeyCertLen(const uint8_t *pkts, size_t pktslen, size_t *certlen)
 {
     const uint8_t *p = pkts;
@@ -878,5 +817,4 @@ int pgpPubkeyFingerprint(const uint8_t * pkts, size_t pktslen,
 	return -1;
     return getKeyFingerprint(pkt.body, pkt.blen, fp, fplen) == RPMPGP_OK ? 0 : -1;
 }
-
 
