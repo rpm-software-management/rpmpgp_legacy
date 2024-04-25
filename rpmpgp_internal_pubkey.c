@@ -111,12 +111,10 @@ static int is_same_keyid(pgpDigParams digp, pgpDigParams sigdigp)
 
 /* Parse a complete pubkey with all associated packets */
 /* This is similar to gnupg's merge_selfsigs_main() function */
-int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams * ret,
-                              char **lints)
+rpmpgpRC pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams digp)
 {
     const uint8_t *p = pkts;
     const uint8_t *pend = pkts + pktlen;
-    pgpDigParams digp = NULL;
     pgpDigParams sigdigp = NULL;
     pgpDigParams newest_digp = NULL;
     int useridpkt, subkeypkt;
@@ -127,28 +125,18 @@ int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams * ret,
     int haveselfsig;
     uint32_t now = 0;
 
-    if (lints)
-	*lints = NULL;
-
     /* parse the main pubkey */
-    if (pktlen > RPM_MAX_OPENPGP_BYTES || pgpDecodePkt(p, (pend - p), &mainpkt)) {
-	pgpAddLint(NULL, lints, RPMPGP_ERROR_CORRUPT_PGP_PACKET);
-	return -1;
-    }
-    if (mainpkt.tag != PGPTAG_PUBLIC_KEY) {
-	pgpAddLint(NULL, lints, RPMPGP_ERROR_UNEXPECTED_PGP_PACKET);
-	return -1;	/* pubkey packet must come first */
-    }
+    if (pktlen > RPM_MAX_OPENPGP_BYTES)
+	return RPMPGP_ERROR_CORRUPT_PGP_PACKET;
+    if (pgpDecodePkt(p, (pend - p), &mainpkt) != RPMPGP_OK)
+	return RPMPGP_ERROR_CORRUPT_PGP_PACKET;
+    if (mainpkt.tag != PGPTAG_PUBLIC_KEY)
+	return RPMPGP_ERROR_UNEXPECTED_PGP_PACKET;
     p += (mainpkt.body - mainpkt.head) + mainpkt.blen;
 
-    /* create dig for the main pubkey and parse the pubkey packet */
-    digp = pgpDigParamsNew(mainpkt.tag);
-    if ((rc = pgpPrtKey(mainpkt.tag, mainpkt.body, mainpkt.blen, digp)) != RPMPGP_OK) {
-	if (lints)
-	    pgpAddLint(digp, lints, rc);
-	pgpDigParamsFree(digp);
-	return -1;
-    }
+    /* Parse the pubkey packet */
+    if ((rc = pgpPrtKey(mainpkt.tag, mainpkt.body, mainpkt.blen, digp)) != RPMPGP_OK)
+	return rc;
 
     useridpkt = subkeypkt = 0;		/* type of the section packet */
     memset(&sectionpkt, 0, sizeof(sectionpkt));
@@ -320,20 +308,13 @@ int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams * ret,
 	rc = RPMPGP_ERROR_INTERNAL;
     sigdigp = pgpDigParamsFree(sigdigp);
     newest_digp = pgpDigParamsFree(newest_digp);
-    if (ret && rc == RPMPGP_OK) {
-	*ret = digp;
-    } else {
-	if (lints)
-	    pgpAddLint(digp, lints, rc);
-	pgpDigParamsFree(digp);
-    }
-    return rc == RPMPGP_OK ? 0 : -1;
+    return rc;
 }
 	
 /* Return the subkeys for a pubkey. Note that the code in pgpPrtParamsPubkey() already
  * made sure that the signatures are self-signatures and verified ok. */
 /* This is similar to gnupg's merge_selfsigs_subkey() function */
-int pgpPrtParamsSubkeys(const uint8_t *pkts, size_t pktlen,
+rpmpgpRC pgpPrtParamsPubkeySubkeys(const uint8_t *pkts, size_t pktlen,
 			pgpDigParams mainkey, pgpDigParams **subkeys,
 			int *subkeysCount)
 {
@@ -342,23 +323,38 @@ int pgpPrtParamsSubkeys(const uint8_t *pkts, size_t pktlen,
     pgpDigParams *digps = NULL, subdigp = NULL;
     pgpDigParams sigdigp = NULL;
     pgpDigParams newest_digp = NULL;
+    rpmpgpRC rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;		/* assume failure */
     int count = 0;
     int alloced = 10;
     pgpPkt mainpkt, subkeypkt, pkt;
-    int rc, i;
+    int i;
     uint32_t now = 0;
 
-    if (pgpDecodePkt(p, (pend - p), &mainpkt) || mainpkt.tag != PGPTAG_PUBLIC_KEY)
-	return -1;	/* pubkey packet must come first */
+    if (mainkey->tag != PGPTAG_PUBLIC_KEY || !mainkey->version)
+	return RPMPGP_ERROR_INTERNAL;	/* main key must be a parsed pubkey */
+
+    if (pktlen > RPM_MAX_OPENPGP_BYTES)
+	return RPMPGP_ERROR_CORRUPT_PGP_PACKET;
+    if (pgpDecodePkt(p, (pend - p), &mainpkt) != RPMPGP_OK)
+	return RPMPGP_ERROR_CORRUPT_PGP_PACKET;
+    if (mainpkt.tag != PGPTAG_PUBLIC_KEY)
+	return RPMPGP_ERROR_UNEXPECTED_PGP_PACKET;
     p += (mainpkt.body - mainpkt.head) + mainpkt.blen;
 
     memset(&subkeypkt, 0, sizeof(subkeypkt));
 
     digps = xmalloc(alloced * sizeof(*digps));
-    while (1) {
+    rc = RPMPGP_OK;
+    while (rc == RPMPGP_OK) {
 	if (p < pend) {
-	    if (pgpDecodePkt(p, (pend - p), &pkt))
+	    if (pgpDecodePkt(p, (pend - p), &pkt)) {
+		rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;
 		break;
+	    }
+	    if (pkt.tag == PGPTAG_PUBLIC_KEY) {
+		rc = RPMPGP_ERROR_BAD_PUBKEY_STRUCTURE;
+		break;	/* start of another public key, error out */
+	    }
 	} else {
 	    pkt.tag = 0;
 	}
@@ -432,12 +428,12 @@ int pgpPrtParamsSubkeys(const uint8_t *pkts, size_t pktlen,
 	    sigdigp = pgpDigParamsFree(sigdigp);
 	}
     }
-    rc = (p == pend) ? 0 : -1;
-
+    if (rc == RPMPGP_OK && p != pend)
+	rc = RPMPGP_ERROR_INTERNAL;
     sigdigp = pgpDigParamsFree(sigdigp);
     newest_digp = pgpDigParamsFree(newest_digp);
 
-    if (rc == 0) {
+    if (rc == RPMPGP_OK) {
 	*subkeys = xrealloc(digps, count * sizeof(*digps));
 	*subkeysCount = count;
     } else {
@@ -445,7 +441,6 @@ int pgpPrtParamsSubkeys(const uint8_t *pkts, size_t pktlen,
 	    pgpDigParamsFree(digps[i]);
 	free(digps);
     }
-
     return rc;
 }
 

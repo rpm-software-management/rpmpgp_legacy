@@ -105,7 +105,7 @@ rpmRC pgpVerifySignature2(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx
     rpmRC res;
     if (lints)
         *lints = NULL;
-    
+
     res = pgpVerifySignatureRaw(key, sig, hashctx) == RPMPGP_OK ? RPMRC_OK : RPMRC_FAIL;
     if (res != RPMRC_OK)
 	goto exit;
@@ -161,39 +161,38 @@ rpmRC pgpVerifySignature(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx)
     return pgpVerifySignature2(key, sig, hashctx, NULL);
 }
 
+
 int pgpPrtParams2(const uint8_t * pkts, size_t pktlen, unsigned int pkttype,
 		 pgpDigParams * ret, char **lints)
 {
     pgpDigParams digp = NULL;
-    rpmpgpRC rc;
+    rpmpgpRC rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;	/* assume failure */
     pgpPkt pkt;
 
     if (lints)
         *lints = NULL;
-    if (pktlen > RPM_MAX_OPENPGP_BYTES || pgpDecodePkt(pkts, pktlen, &pkt)) {
-	pgpAddLint(NULL, lints, RPMPGP_ERROR_CORRUPT_PGP_PACKET);
-	return -1;
+    if (pktlen > RPM_MAX_OPENPGP_BYTES)
+	goto exit;
+    if (pgpDecodePkt(pkts, pktlen, &pkt))
+	goto exit;
+
+    rc = RPMPGP_ERROR_UNEXPECTED_PGP_PACKET;
+    if (pkttype && pkt.tag != pkttype)
+	goto exit;
+
+    if (pkt.tag == PGPTAG_PUBLIC_KEY) {
+	/* use specialized pubkey implementation */
+	digp = pgpDigParamsNew(pkt.tag);
+	rc = pgpPrtParamsPubkey(pkts, pktlen, digp);
+    } else if (pkt.tag == PGPTAG_SIGNATURE) {
+	digp = pgpDigParamsNew(pkt.tag);
+	rc = pgpPrtSig(pkt.tag, pkt.body, pkt.blen, digp);
+	/* treat trailing data as error */
+	if (rc == RPMPGP_OK && (pkt.body - pkt.head) + pkt.blen != pktlen)
+	    rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;
     }
 
-    if (pkttype && pkt.tag != pkttype) {
-	pgpAddLint(NULL, lints, RPMPGP_ERROR_UNEXPECTED_PGP_PACKET);
-	return -1;
-    }
-
-    if (pkt.tag == PGPTAG_PUBLIC_KEY)
-	return pgpPrtParamsPubkey(pkts, pktlen, ret, lints);	/* switch to specialized pubkey implementation */
-
-    if (pkt.tag != PGPTAG_SIGNATURE) {
-	pgpAddLint(NULL, lints, RPMPGP_ERROR_UNEXPECTED_PGP_PACKET);
-	return -1;
-    }
-
-    /* parse the signature */
-    digp = pgpDigParamsNew(pkt.tag);
-    rc = pgpPrtSig(pkt.tag, pkt.body, pkt.blen, digp);
-    if (rc == RPMPGP_OK && (pkt.body - pkt.head) + pkt.blen != pktlen)
-	rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET; 		/* trailing data is an error */
-
+exit:
     if (ret && rc == RPMPGP_OK)
 	*ret = digp;
     else {
@@ -210,12 +209,22 @@ int pgpPrtParams(const uint8_t * pkts, size_t pktlen, unsigned int pkttype,
     return pgpPrtParams2(pkts, pktlen, pkttype, ret, NULL);
 }
 
+int pgpPrtParamsSubkeys(const uint8_t *pkts, size_t pktlen,
+			pgpDigParams mainkey, pgpDigParams **subkeys,
+			int *subkeysCount)
+{
+    rpmpgpRC rc = pgpPrtParamsPubkeySubkeys(pkts, pktlen, mainkey, subkeys, subkeysCount);
+    return rc == RPMPGP_OK ? 0 : -1;
+}
+
 rpmRC pgpPubKeyLint(const uint8_t *pkts, size_t pktslen, char **explanation)
 {
-    pgpDigParams digp = NULL;
-    rpmRC res = pgpPrtParamsPubkey(pkts, pktslen, &digp, explanation) ? RPMRC_FAIL : RPMRC_OK;
+    pgpDigParams digp = pgpDigParamsNew(PGPTAG_PUBLIC_KEY);
+    rpmpgpRC rc = pgpPrtParamsPubkey(pkts, pktslen, digp);
+    if (rc != RPMPGP_OK && explanation)
+	pgpAddLint(digp, explanation, rc);
     pgpDigParamsFree(digp);
-    return res;
+    return rc == RPMPGP_OK ? RPMRC_OK : RPMRC_FAIL;
 }
 
 int pgpPubKeyCertLen(const uint8_t *pkts, size_t pktslen, size_t *certlen)

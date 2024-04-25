@@ -144,8 +144,11 @@ void pgpAddLint(pgpDigParams digp, char **lints, rpmpgpRC error);
 
 /* pubkey parsing */
 RPM_GNUC_INTERNAL
-int pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams * ret, char **lints);
+rpmpgpRC pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams digp);
 
+RPM_GNUC_INTERNAL
+rpmpgpRC pgpPrtParamsPubkeySubkeys(const uint8_t * pkts, size_t pktlen, pgpDigParams mainkey,
+				   pgpDigParams **subkeys, int *subkeysCount);
 
 /* signature verification */
 rpmpgpRC pgpVerifySignatureRaw(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx);
