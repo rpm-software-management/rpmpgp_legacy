@@ -142,12 +142,12 @@ rpmpgpRC pgpGetKeyID(const uint8_t *h, size_t hlen, pgpKeyID_t keyid);
 RPM_GNUC_INTERNAL
 void pgpAddLint(pgpDigParams digp, char **lints, rpmpgpRC error);
 
-/* pubkey parsing */
+/* transferable pubkey parsing */
 RPM_GNUC_INTERNAL
-rpmpgpRC pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams digp);
+rpmpgpRC pgpPrtTransferablePubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams digp);
 
 RPM_GNUC_INTERNAL
-rpmpgpRC pgpPrtParamsPubkeySubkeys(const uint8_t * pkts, size_t pktlen, pgpDigParams mainkey,
+rpmpgpRC pgpPrtTransferablePubkeySubkeys(const uint8_t * pkts, size_t pktlen, pgpDigParams mainkey,
 				   pgpDigParams **subkeys, int *subkeysCount);
 
 /* signature verification */

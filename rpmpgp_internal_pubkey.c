@@ -1,6 +1,6 @@
 /** \ingroup rpmio signature
  * \file rpmio/rpmpgp_internal_pubkey.c
- * Pubkey parsing functions
+ * Parse a transferable public key
  */
 
 #include "system.h"
@@ -111,7 +111,7 @@ static int is_same_keyid(pgpDigParams digp, pgpDigParams sigdigp)
 
 /* Parse a complete pubkey with all associated packets */
 /* This is similar to gnupg's merge_selfsigs_main() function */
-rpmpgpRC pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams digp)
+rpmpgpRC pgpPrtTransferablePubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams digp)
 {
     const uint8_t *p = pkts;
     const uint8_t *pend = pkts + pktlen;
@@ -314,7 +314,7 @@ rpmpgpRC pgpPrtParamsPubkey(const uint8_t * pkts, size_t pktlen, pgpDigParams di
 /* Return the subkeys for a pubkey. Note that the code in pgpPrtParamsPubkey() already
  * made sure that the signatures are self-signatures and verified ok. */
 /* This is similar to gnupg's merge_selfsigs_subkey() function */
-rpmpgpRC pgpPrtParamsPubkeySubkeys(const uint8_t *pkts, size_t pktlen,
+rpmpgpRC pgpPrtTransferablePubkeySubkeys(const uint8_t *pkts, size_t pktlen,
 			pgpDigParams mainkey, pgpDigParams **subkeys,
 			int *subkeysCount)
 {

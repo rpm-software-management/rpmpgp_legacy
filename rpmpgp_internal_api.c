@@ -181,9 +181,9 @@ int pgpPrtParams2(const uint8_t * pkts, size_t pktlen, unsigned int pkttype,
 	goto exit;
 
     if (pkt.tag == PGPTAG_PUBLIC_KEY) {
-	/* use specialized pubkey implementation */
+	/* use specialized transferable pubkey implementation */
 	digp = pgpDigParamsNew(pkt.tag);
-	rc = pgpPrtParamsPubkey(pkts, pktlen, digp);
+	rc = pgpPrtTransferablePubkey(pkts, pktlen, digp);
     } else if (pkt.tag == PGPTAG_SIGNATURE) {
 	digp = pgpDigParamsNew(pkt.tag);
 	rc = pgpPrtSig(pkt.tag, pkt.body, pkt.blen, digp);
@@ -213,14 +213,14 @@ int pgpPrtParamsSubkeys(const uint8_t *pkts, size_t pktlen,
 			pgpDigParams mainkey, pgpDigParams **subkeys,
 			int *subkeysCount)
 {
-    rpmpgpRC rc = pgpPrtParamsPubkeySubkeys(pkts, pktlen, mainkey, subkeys, subkeysCount);
+    rpmpgpRC rc = pgpPrtTransferablePubkeySubkeys(pkts, pktlen, mainkey, subkeys, subkeysCount);
     return rc == RPMPGP_OK ? 0 : -1;
 }
 
 rpmRC pgpPubKeyLint(const uint8_t *pkts, size_t pktslen, char **explanation)
 {
     pgpDigParams digp = pgpDigParamsNew(PGPTAG_PUBLIC_KEY);
-    rpmpgpRC rc = pgpPrtParamsPubkey(pkts, pktslen, digp);
+    rpmpgpRC rc = pgpPrtTransferablePubkey(pkts, pktslen, digp);
     if (rc != RPMPGP_OK && explanation)
 	pgpAddLint(digp, explanation, rc);
     pgpDigParamsFree(digp);
