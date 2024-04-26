@@ -106,17 +106,17 @@ static inline size_t pgpOldLen(const uint8_t *s, size_t slen, size_t * lenp)
  * @param[out] *lenp	decoded length
  * @return		packet header length, 0 on error
  */
-static inline size_t pgpNewLen(const uint8_t *s, size_t slen, size_t * lenp)
+static inline size_t pgpNewLen(const uint8_t *s, size_t slen, size_t *lenp)
 {
     size_t dlen, hlen;
 
-    if (s[1] < 192 && slen > 1) {
+    if (slen > 1 && s[1] < 192) {
 	hlen = 2;
 	dlen = s[1];
-    } else if (s[1] < 224 && slen > 3) {
+    } else if (slen > 3 && s[1] < 224) {
 	hlen = 3;
 	dlen = (((s[1]) - 192) << 8) + s[2] + 192;
-    } else if (s[1] == 255 && slen > 6 && s[2] == 0) {
+    } else if (slen > 6 && s[1] == 255 && s[2] == 0) {
 	hlen = 6;
 	dlen = s[3] << 16 | s[4] << 8 | s[5];
     } else {
@@ -137,17 +137,17 @@ static inline size_t pgpNewLen(const uint8_t *s, size_t slen, size_t * lenp)
  * @param[out] *lenp	decoded length
  * @return		subpacket header length (excluding type), 0 on error
  */
-static inline size_t pgpSubPktLen(const uint8_t *s, size_t slen, size_t * lenp)
+static inline size_t pgpSubPktLen(const uint8_t *s, size_t slen, size_t *lenp)
 {
     size_t dlen, lenlen;
 
-    if (*s < 192) {
+    if (slen > 0 && *s < 192) {
 	lenlen = 1;
 	dlen = *s;
-    } else if (*s < 255 && slen > 2) {
+    } else if (slen > 2 && *s < 255) {
 	lenlen = 2;
 	dlen = (((s[0]) - 192) << 8) + s[1] + 192;
-    } else if (*s == 255 && slen > 5 && s[1] == 0) {
+    } else if (slen > 5 && *s == 255 && s[1] == 0) {
 	lenlen = 5;
 	dlen = s[2] << 16 | s[3] << 8 | s[4];
     } else {
@@ -432,7 +432,7 @@ static rpmpgpRC pgpPrtSubType(const uint8_t *h, size_t hlen, pgpDigParams _digp,
 		break; /* other lengths not understood */
 	    impl = 1;
 	    if (!(_digp->saved & PGPDIG_SAVED_ID)) {
-		memcpy(_digp->signid, p+1, sizeof(_digp->signid));
+		memcpy(_digp->signid, p + 1, sizeof(_digp->signid));
 		_digp->saved |= PGPDIG_SAVED_ID;
 	    }
 	    break;
