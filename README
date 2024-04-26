@@ -25,4 +25,4 @@ Supported PGP features:
   * key revokation
   * signature expiry
 
-# vim: syntax=markdown
+// vim: syntax=markdown
