@@ -102,10 +102,12 @@ uint32_t pgpDigParamsCreationTime(pgpDigParams digp)
 
 rpmRC pgpVerifySignature2(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx, char **lints)
 {
-    rpmRC res;
+    rpmRC res = RPMRC_FAIL;
     if (lints)
         *lints = NULL;
 
+    if (!sig || sig->tag != PGPTAG_SIGNATURE || (sig->sigtype != PGPSIGTYPE_BINARY && sig->sigtype != PGPSIGTYPE_TEXT && sig->sigtype != PGPSIGTYPE_STANDALONE))
+	goto exit;
     res = pgpVerifySignatureRaw(key, sig, hashctx) == RPMPGP_OK ? RPMRC_OK : RPMRC_FAIL;
     if (res != RPMRC_OK)
 	goto exit;
