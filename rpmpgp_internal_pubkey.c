@@ -26,9 +26,9 @@ static rpmpgpRC hashKey(DIGEST_CTX hash, const pgpPkt *pkt, int exptag)
 static rpmpgpRC hashUserID(DIGEST_CTX hash, const pgpPkt *pkt)
 {
     rpmpgpRC rc = RPMPGP_ERROR_INTERNAL;
-    if (pkt->tag == PGPTAG_USER_ID) {
+    if (pkt->tag == PGPTAG_USER_ID || pkt->tag == PGPTAG_PHOTOID) {
 	uint8_t head[] = {
-	    0xb4,
+	    pkt->tag == PGPTAG_USER_ID ? 0xb4 : 0xd1,
 	    (pkt->blen >> 24),
 	    (pkt->blen >> 16),
 	    (pkt->blen >>  8),
@@ -62,7 +62,7 @@ static rpmpgpRC pgpVerifySelf(pgpDigParams key, pgpDigParams selfsig,
     case PGPSIGTYPE_CASUAL_CERT:
     case PGPSIGTYPE_POSITIVE_CERT:
     case PGPSIGTYPE_CERT_REVOKE:
-	if (hash && sectionpkt && sectionpkt->tag == PGPTAG_USER_ID) {
+	if (hash && sectionpkt && (sectionpkt->tag == PGPTAG_USER_ID || sectionpkt->tag == PGPTAG_PHOTOID)) {
 	    rc = hashKey(hash, mainpkt, PGPTAG_PUBLIC_KEY);
 	    if (rc == RPMPGP_OK)
 		rc = hashUserID(hash, sectionpkt);
@@ -264,7 +264,7 @@ rpmpgpRC pgpPrtTransferablePubkey(const uint8_t * pkts, size_t pktlen, pgpDigPar
 		    rc = RPMPGP_ERROR_BAD_PUBKEY_STRUCTURE;
 		    break;		/* signature in wrong section */
 		}
-		if (isselfsig && sectionpkt.tag == PGPTAG_USER_ID) {
+		if (isselfsig) {
 		    if ((rc = pgpVerifySelf(digp, sigdigp, &mainpkt, &sectionpkt)) != RPMPGP_OK)
 			break;		/* verification failed */
 		    haveselfsig = 1;
@@ -292,7 +292,7 @@ rpmpgpRC pgpPrtTransferablePubkey(const uint8_t * pkts, size_t pktlen, pgpDigPar
 	    }
 	    useridpkt = 1;
 	    sectionpkt = pkt;
-	    haveselfsig = pkt.tag == PGPTAG_PHOTOID ? 1 : 0;	/* ignore photo ids with no self-sig */
+	    haveselfsig = 0;
 	} else if (pkt.tag == PGPTAG_PUBLIC_SUBKEY) {
 	    subkeypkt = 1;
 	    useridpkt = 0;
