@@ -188,7 +188,7 @@ rpmpgpRC pgpDecodePkt(const uint8_t *p, size_t plen, pgpPkt *pkt)
 
 
 /*
- * Key/Signature algorithm parameter handling
+ * Key/Signature algorithm parameter handling and signature verification
  */
 
 static pgpDigAlg pgpDigAlgNew(void)
@@ -215,7 +215,7 @@ static inline int pgpMpiLen(const uint8_t *p)
     return 2 + ((mpi_bits + 7) >> 3);
 }
 
-static rpmpgpRC processMpis(const int mpis, pgpDigAlg alg,
+static rpmpgpRC pgpDigAlgProcessMpis(pgpDigAlg alg, const int mpis,
 		       const uint8_t *p, const uint8_t *const pend)
 {
     int i = 0;
@@ -234,6 +234,71 @@ static rpmpgpRC processMpis(const int mpis, pgpDigAlg alg,
     /* Does the size and number of MPI's match our expectations? */
     return p == pend && i == mpis ? RPMPGP_OK : RPMPGP_ERROR_CORRUPT_PGP_PACKET;
 }
+
+static rpmpgpRC pgpDigAlgVerify(pgpDigAlg keyalg, pgpDigAlg sigalg,
+			uint8_t *hash, size_t hashlen, int hashalgo)
+{
+    if (keyalg && sigalg && sigalg->verify)
+	return sigalg->verify(keyalg, sigalg, hash, hashlen, hashalgo);
+    return RPMPGP_ERROR_SIGNATURE_VERIFICATION;
+}
+
+rpmpgpRC pgpVerifySignatureRaw(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx)
+{
+    DIGEST_CTX ctx;
+    uint8_t *hash = NULL;
+    size_t hashlen = 0;
+    rpmpgpRC rc = RPMPGP_ERROR_SIGNATURE_VERIFICATION; /* assume failure */
+
+    /* make sure the parameters are correct and the pubkey algo matches */
+    if (sig == NULL || hashctx == NULL)
+	return RPMPGP_ERROR_INTERNAL;
+    if (sig->tag != PGPTAG_SIGNATURE)
+	return RPMPGP_ERROR_INTERNAL;
+    if (key && key->tag != PGPTAG_PUBLIC_KEY && key->tag != PGPTAG_PUBLIC_SUBKEY)
+	return RPMPGP_ERROR_INTERNAL;
+    if (key && sig->pubkey_algo != key->pubkey_algo)
+	return RPMPGP_ERROR_SIGNATURE_VERIFICATION;
+
+    ctx = rpmDigestDup(hashctx);
+    if (sig->hash != NULL)
+	rpmDigestUpdate(ctx, sig->hash, sig->hashlen);
+
+    if (sig->version == 4) {
+	/* V4 trailer is six octets long (rfc4880) */
+	uint8_t trailer[6] = {
+	    sig->version,
+	    0xff,
+	    (sig->hashlen >> 24),
+	    (sig->hashlen >> 16),
+	    (sig->hashlen >>  8),
+	    (sig->hashlen      )
+	};
+	rpmDigestUpdate(ctx, trailer, sizeof(trailer));
+    }
+
+    rpmDigestFinal(ctx, (void **)&hash, &hashlen, 0);
+    ctx = NULL;
+
+    /* Compare leading 16 bits of digest for quick check. */
+    if (hash == NULL || memcmp(hash, sig->signhash16, 2) != 0)
+	goto exit;
+
+    /* If we have a key, verify the signature for real */
+    if (key)
+	rc = pgpDigAlgVerify(key->alg, sig->alg, hash, hashlen, sig->hash_algo);
+    else
+	rc = RPMPGP_OK;		/* we've done all we can */
+exit:
+    free(hash);
+    rpmDigestFinal(ctx, NULL, NULL, 0);
+    return rc;
+}
+
+
+/*
+ * Key/Signature parameter parsing
+ */
 
 static uint8_t curve_oids[] = {
     PGPCURVE_NIST_P_256,	0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07,
@@ -280,7 +345,7 @@ static rpmpgpRC pgpPrtKeyParams(pgpTag tag, const uint8_t *h, size_t hlen,
     if (alg->mpis < 0)
 	rc = RPMPGP_ERROR_UNSUPPORTED_ALGORITHM;
     else
-	rc = processMpis(alg->mpis, alg, p, h + hlen);
+	rc = pgpDigAlgProcessMpis(alg, alg->mpis, p, h + hlen);
     if (rc == RPMPGP_OK)
 	keyp->alg = alg;
     else
@@ -313,7 +378,7 @@ static rpmpgpRC pgpValidateKeyParamsSize(int pubkey_algo, const uint8_t *p, size
     }
     if (nmpis < 0)
 	return rc;
-    return processMpis(nmpis, NULL, p, p + plen);
+    return pgpDigAlgProcessMpis(NULL, nmpis, p, p + plen);
 }
 
 rpmpgpRC pgpPrtSigParams(pgpTag tag, const uint8_t *h, size_t hlen,
@@ -328,7 +393,7 @@ rpmpgpRC pgpPrtSigParams(pgpTag tag, const uint8_t *h, size_t hlen,
     if (alg->mpis < 0)
 	rc = RPMPGP_ERROR_UNSUPPORTED_ALGORITHM;
     else
-	rc = processMpis(alg->mpis, alg, h + sigp->mpi_offset, h + hlen);
+	rc = pgpDigAlgProcessMpis(alg, alg->mpis, h + sigp->mpi_offset, h + hlen);
     if (rc == RPMPGP_OK)
 	sigp->alg = alg;
     else
@@ -654,67 +719,5 @@ rpmpgpRC pgpPrtUserID(pgpTag tag, const uint8_t *h, size_t hlen,
     _digp->userid = memcpy(xmalloc(hlen+1), h, hlen);
     _digp->userid[hlen] = '\0';
     return RPMPGP_OK;
-}
-
-
-/*
- * signature verification
- */
-
-rpmpgpRC pgpVerifySignatureRaw(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx)
-{
-    DIGEST_CTX ctx;
-    uint8_t *hash = NULL;
-    size_t hashlen = 0;
-    rpmpgpRC rc = RPMPGP_ERROR_SIGNATURE_VERIFICATION; /* assume failure */
-
-    /* make sure the parameters are correct */
-    if (sig == NULL || hashctx == NULL)
-	return RPMPGP_ERROR_INTERNAL;
-    if (sig->tag != PGPTAG_SIGNATURE)
-	return RPMPGP_ERROR_INTERNAL;
-    if (key && key->tag != PGPTAG_PUBLIC_KEY && key->tag != PGPTAG_PUBLIC_SUBKEY)
-	return RPMPGP_ERROR_INTERNAL;
-
-    ctx = rpmDigestDup(hashctx);
-    if (sig->hash != NULL)
-	rpmDigestUpdate(ctx, sig->hash, sig->hashlen);
-
-    if (sig->version == 4) {
-	/* V4 trailer is six octets long (rfc4880) */
-	uint8_t trailer[6] = {
-	    sig->version,
-	    0xff,
-	    (sig->hashlen >> 24),
-	    (sig->hashlen >> 16),
-	    (sig->hashlen >>  8),
-	    (sig->hashlen      )
-	};
-	rpmDigestUpdate(ctx, trailer, sizeof(trailer));
-    }
-
-    rpmDigestFinal(ctx, (void **)&hash, &hashlen, 0);
-    ctx = NULL;
-
-    /* Compare leading 16 bits of digest for quick check. */
-    if (hash == NULL || memcmp(hash, sig->signhash16, 2) != 0)
-	goto exit;
-
-    /*
-     * If we have a key, verify the signature for real. Otherwise we've
-     * done all we can.
-     */
-    if (key) {
-	pgpDigAlg sa = sig->alg;
-	pgpDigAlg ka = key->alg;
-	if (sa && ka && sa->verify && sig->pubkey_algo == key->pubkey_algo)
-	    rc = sa->verify(ka, sa, hash, hashlen, sig->hash_algo);
-    } else {
-	rc = RPMPGP_OK;
-    }
-exit:
-    free(hash);
-    rpmDigestFinal(ctx, NULL, NULL, 0);
-    return rc;
 }
 
