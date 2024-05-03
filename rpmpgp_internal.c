@@ -350,14 +350,13 @@ static rpmpgpRC pgpPrtKeyParams(pgpTag tag, const uint8_t *h, size_t hlen,
 
 /* validate that the mpi data matches our expectations */
 static rpmpgpRC pgpValidateKeyParamsSize(int pubkey_algo, const uint8_t *p, size_t plen) {
-    rpmpgpRC rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;		/* assume failure */
     int nmpis = -1;
 
     switch (pubkey_algo) {
 	case PGPPUBKEYALGO_ECDSA:
 	case PGPPUBKEYALGO_EDDSA:
 	    if (!plen || p[0] == 0x00 || p[0] == 0xff || plen < 1 + p[0])
-		return rc;
+		return RPMPGP_ERROR_CORRUPT_PGP_PACKET;
 	    plen -= 1 + p[0];
 	    p += 1 + p[0];
 	    nmpis = 1;
@@ -372,7 +371,7 @@ static rpmpgpRC pgpValidateKeyParamsSize(int pubkey_algo, const uint8_t *p, size
 	    break;
     }
     if (nmpis < 0)
-	return rc;
+	return RPMPGP_ERROR_UNSUPPORTED_ALGORITHM;
     return pgpDigAlgProcessMpis(NULL, nmpis, p, p + plen);
 }
 
