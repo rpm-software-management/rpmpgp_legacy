@@ -245,10 +245,10 @@ static rpmpgpRC pgpDigAlgVerify(pgpDigAlg keyalg, pgpDigAlg sigalg,
 
 rpmpgpRC pgpVerifySignatureRaw(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx)
 {
+    rpmpgpRC rc = RPMPGP_ERROR_SIGNATURE_VERIFICATION; /* assume failure */
     DIGEST_CTX ctx;
     uint8_t *hash = NULL;
     size_t hashlen = 0;
-    rpmpgpRC rc = RPMPGP_ERROR_SIGNATURE_VERIFICATION; /* assume failure */
 
     /* make sure the parameters are correct and the pubkey algo matches */
     if (sig == NULL || hashctx == NULL)
@@ -278,20 +278,15 @@ rpmpgpRC pgpVerifySignatureRaw(pgpDigParams key, pgpDigParams sig, DIGEST_CTX ha
     }
 
     rpmDigestFinal(ctx, (void **)&hash, &hashlen, 0);
-    ctx = NULL;
 
-    /* Compare leading 16 bits of digest for quick check. */
+    /* Compare leading 16 bits of digest for a quick check. */
     if (hash == NULL || memcmp(hash, sig->signhash16, 2) != 0)
-	goto exit;
-
-    /* If we have a key, verify the signature for real */
-    if (key)
+	rc = RPMPGP_ERROR_SIGNATURE_VERIFICATION;
+    else if (key)		/* verify the signature for real */
 	rc = pgpDigAlgVerify(key->alg, sig->alg, hash, hashlen, sig->hash_algo);
-    else
-	rc = RPMPGP_OK;		/* we've done all we can */
-exit:
+    else			/* we've done all we can */
+	rc = RPMPGP_OK;
     free(hash);
-    rpmDigestFinal(ctx, NULL, NULL, 0);
     return rc;
 }
 
