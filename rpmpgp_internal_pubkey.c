@@ -115,7 +115,6 @@ rpmpgpRC pgpPrtTransferablePubkey(const uint8_t * pkts, size_t pktlen, pgpDigPar
     const uint8_t *pend = pkts + pktlen;
     pgpDigParams sigdigp = NULL;
     pgpDigParams newest_digp = NULL;
-    int useridpkt, subkeypkt;
     rpmpgpRC rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;		/* assume failure */
     uint32_t key_expire_sig_time = 0;
     uint32_t key_flags_sig_time = 0;
@@ -135,15 +134,12 @@ rpmpgpRC pgpPrtTransferablePubkey(const uint8_t * pkts, size_t pktlen, pgpDigPar
     /* Parse the pubkey packet */
     if ((rc = pgpPrtKey(mainpkt.tag, mainpkt.body, mainpkt.blen, digp)) != RPMPGP_OK)
 	return rc;
-
-    useridpkt = subkeypkt = 0;		/* type of the section packet */
-    memset(&sectionpkt, 0, sizeof(sectionpkt));
+    sectionpkt = mainpkt;
     haveselfsig = 1;
 
     rc = RPMPGP_OK;
     while (rc == RPMPGP_OK) {
 	pgpPkt pkt;
-	int end_of_section;
 
 	if (p < pend) {
 	    if (pgpDecodePkt(p, (pend - p), &pkt)) {
@@ -158,42 +154,41 @@ rpmpgpRC pgpPrtTransferablePubkey(const uint8_t * pkts, size_t pktlen, pgpDigPar
 	    pkt.tag = 0;
 	}
 
-	end_of_section = p == pend || pkt.tag == PGPTAG_USER_ID || pkt.tag == PGPTAG_PHOTOID || pkt.tag == PGPTAG_PUBLIC_SUBKEY;
-	/* did we end a direct/userid/subkey section? if yes, make sure there is a self sig and take the data from the newest signature */
-	if (end_of_section && !haveselfsig) {
-	    rc = RPMPGP_ERROR_MISSING_SELFSIG;
-	    break;
-	}
-	if (end_of_section && newest_digp) {
-	    if (newest_digp->sigtype == PGPSIGTYPE_CERT_REVOKE)
-		newest_digp->saved &= ~(PGPDIG_SAVED_KEY_EXPIRE | PGPDIG_SAVED_KEY_FLAGS);	/* just in case */
-	    else if (!subkeypkt)
-		digp->saved |= PGPDIG_SAVED_VALID;		/* we have at least one good self-sig */
-	    /* commit the data from the newest signature */
-	    if (!subkeypkt && (newest_digp->saved & PGPDIG_SAVED_KEY_EXPIRE)) {
-		if ((!key_expire_sig_time || newest_digp->time > key_expire_sig_time)) {
-		    digp->key_expire = newest_digp->key_expire;
-		    key_expire_sig_time = newest_digp->time;
-		    digp->saved |= PGPDIG_SAVED_KEY_EXPIRE;
-		    if (!useridpkt)
-			key_expire_sig_time = 0xffffffffU;	/* expires from the direct signatures are final */
-		}
+	/* did we end a direct/userid/subkey section? */
+	if (p == pend || pkt.tag == PGPTAG_USER_ID || pkt.tag == PGPTAG_PHOTOID || pkt.tag == PGPTAG_PUBLIC_SUBKEY) {
+	    /* return an error if there was no self-sig at all */
+	    if (!haveselfsig) {
+		rc = RPMPGP_ERROR_MISSING_SELFSIG;
+		break;
 	    }
-	    if (!subkeypkt && (newest_digp->saved & PGPDIG_SAVED_KEY_FLAGS)) {
-		if ((!key_flags_sig_time || newest_digp->time > key_flags_sig_time)) {
-		    digp->key_flags = newest_digp->key_flags;
-		    key_flags_sig_time = newest_digp->time;
-		    digp->saved |= PGPDIG_SAVED_KEY_FLAGS;
-		    if (!useridpkt)
-			key_flags_sig_time = 0xffffffffU;	/* key flags from the direct signatures are final */
+	    /* take the data from the newest signature */
+	    if (newest_digp && (sectionpkt.tag == PGPTAG_USER_ID || sectionpkt.tag == PGPTAG_PUBLIC_KEY) && newest_digp->sigtype != PGPSIGTYPE_CERT_REVOKE) {
+		digp->saved |= PGPDIG_SAVED_VALID;	/* we have a valid binding sig */
+		if ((newest_digp->saved & PGPDIG_SAVED_KEY_EXPIRE) != 0) {
+		    if ((!key_expire_sig_time || newest_digp->time > key_expire_sig_time)) {
+			digp->key_expire = newest_digp->key_expire;
+			digp->saved |= PGPDIG_SAVED_KEY_EXPIRE;
+			key_expire_sig_time = newest_digp->time;
+			if (newest_digp->sigtype == PGPSIGTYPE_SIGNED_KEY)
+			    key_expire_sig_time = 0xffffffffU;	/* expires from the direct signatures are final */
+		    }
 		}
-	    }
-	    if (useridpkt && newest_digp->sigtype != PGPSIGTYPE_CERT_REVOKE) {
-		if (!digp->userid || ((newest_digp->saved & PGPDIG_SAVED_PRIMARY) != 0 && (digp->saved & PGPDIG_SAVED_PRIMARY) == 0)) {
-		    if ((rc = pgpPrtUserID(sectionpkt.tag, sectionpkt.body, sectionpkt.blen, digp)) != RPMPGP_OK)
-			break;
-		    if ((newest_digp->saved & PGPDIG_SAVED_PRIMARY) != 0)
-			digp->saved |= PGPDIG_SAVED_PRIMARY;
+		if ((newest_digp->saved & PGPDIG_SAVED_KEY_FLAGS) != 0) {
+		    if ((!key_flags_sig_time || newest_digp->time > key_flags_sig_time)) {
+			digp->key_flags = newest_digp->key_flags;
+			digp->saved |= PGPDIG_SAVED_KEY_FLAGS;
+			key_flags_sig_time = newest_digp->time;
+			if (newest_digp->sigtype == PGPSIGTYPE_SIGNED_KEY)
+			    key_flags_sig_time = 0xffffffffU;	/* key flags from the direct signatures are final */
+		    }
+		}
+		if (sectionpkt.tag == PGPTAG_USER_ID) {
+		    if (!digp->userid || ((newest_digp->saved & PGPDIG_SAVED_PRIMARY) != 0 && (digp->saved & PGPDIG_SAVED_PRIMARY) == 0)) {
+			if ((rc = pgpPrtUserID(sectionpkt.tag, sectionpkt.body, sectionpkt.blen, digp)) != RPMPGP_OK)
+			    break;
+			if ((newest_digp->saved & PGPDIG_SAVED_PRIMARY) != 0)
+			    digp->saved |= PGPDIG_SAVED_PRIMARY;
+		    }
 		}
 	    }
 	    newest_digp = pgpDigParamsFree(newest_digp);
@@ -203,72 +198,51 @@ rpmpgpRC pgpPrtTransferablePubkey(const uint8_t * pkts, size_t pktlen, pgpDigPar
 	    break;	/* all packets processed */
 
 	if (pkt.tag == PGPTAG_SIGNATURE) {
-	    int needsig = 0;
-	    int isselfsig;
+	    int isselfsig, needsig = 0;
 	    sigdigp = pgpDigParamsNew(pkt.tag);
 	    /* use the NoParams variant because we want to ignore non self-sigs */
 	    if ((rc = pgpPrtSigNoParams(pkt.tag, pkt.body, pkt.blen, sigdigp)) != RPMPGP_OK)
 		break;
-
 	    isselfsig = is_same_keyid(digp, sigdigp);
-	    /* if this is self-signed add MPIs so we can verify */
-	    if (isselfsig) {
-	        if ((rc = pgpPrtSigParams(pkt.tag, pkt.body, pkt.blen, sigdigp)) != RPMPGP_OK)
-		    break;
-	    }
 
-	    if (sigdigp->sigtype == PGPSIGTYPE_SUBKEY_BINDING || sigdigp->sigtype == PGPSIGTYPE_SUBKEY_REVOKE) {
-		if (!subkeypkt) {
-		    rc = RPMPGP_ERROR_BAD_PUBKEY_STRUCTURE;
-		    break;		/* signature in wrong section */
-		}
-		if (!isselfsig) {
-		    rc = RPMPGP_ERROR_BAD_PUBKEY_STRUCTURE;
-		    break;		/* the binding signature must be a self signature */
-		}
-		if ((rc = pgpVerifySelf(digp, sigdigp, &mainpkt, &sectionpkt)) != RPMPGP_OK)
-		    break;		/* verification failed */
-		haveselfsig = 1;
-		needsig = 0;		/* handled in pgpPrtTransferablePubkeySubkeys() */
-	    }
-
+	    /* check if we understand this signature type and make sure it is in the right section */
 	    if (sigdigp->sigtype == PGPSIGTYPE_KEY_REVOKE) {
 		/* sections don't matter here */
+		needsig = 1;
+	    } else if (sigdigp->sigtype == PGPSIGTYPE_SUBKEY_BINDING || sigdigp->sigtype == PGPSIGTYPE_SUBKEY_REVOKE) {
+		if (sectionpkt.tag != PGPTAG_PUBLIC_SUBKEY) {
+		    rc = RPMPGP_ERROR_BAD_PUBKEY_STRUCTURE;
+		    break;		/* signature in wrong section */
+		}
+		needsig = 1;
+	    } else if (sigdigp->sigtype == PGPSIGTYPE_SIGNED_KEY) {
+		if (sectionpkt.tag != PGPTAG_PUBLIC_KEY) {
+		    rc = RPMPGP_ERROR_BAD_PUBKEY_STRUCTURE;
+		    break;		/* signature in wrong section */
+		}
+		needsig = isselfsig;
+	    } else if (sigdigp->sigtype == PGPSIGTYPE_GENERIC_CERT || sigdigp->sigtype == PGPSIGTYPE_PERSONA_CERT || sigdigp->sigtype == PGPSIGTYPE_CASUAL_CERT || sigdigp->sigtype == PGPSIGTYPE_POSITIVE_CERT || sigdigp->sigtype == PGPSIGTYPE_CERT_REVOKE) {
+		if (sectionpkt.tag != PGPTAG_USER_ID && sectionpkt.tag != PGPTAG_PHOTOID) {
+		    rc = RPMPGP_ERROR_BAD_PUBKEY_STRUCTURE;
+		    break;		/* signature in wrong section */
+		}
+		needsig = isselfsig;
+		/* note that cert revokations get overwritten by newer certifications (like in gnupg) */
+	    }
+
+	    /* verify self signature if we need it */
+	    if (needsig) {
 		if (!isselfsig) {
 		    rc = RPMPGP_ERROR_BAD_PUBKEY_STRUCTURE;
-		    break;		/* the binding signature must be a self signature */
+		    break;
 		}
-		if ((rc = pgpVerifySelf(digp, sigdigp, &mainpkt, NULL)) != RPMPGP_OK)
+		/* add MPIs so we can verify */
+	        if ((rc = pgpPrtSigParams(pkt.tag, pkt.body, pkt.blen, sigdigp)) != RPMPGP_OK)
+		    break;
+		if ((rc = pgpVerifySelf(digp, sigdigp, &mainpkt, &sectionpkt)) != RPMPGP_OK)
 		    break;		/* verification failed */
-		if (!subkeypkt && !useridpkt)
+		if (sigdigp->sigtype != PGPSIGTYPE_KEY_REVOKE)
 		    haveselfsig = 1;
-		needsig = 1;
-	    }
-
-	    if (sigdigp->sigtype == PGPSIGTYPE_SIGNED_KEY) {
-		if (subkeypkt || useridpkt) {
-		    rc = RPMPGP_ERROR_BAD_PUBKEY_STRUCTURE;
-		    break;		/* signature in wrong section */
-		}
-		if (isselfsig) {
-		    if ((rc = pgpVerifySelf(digp, sigdigp, &mainpkt, NULL)) != RPMPGP_OK)
-			break;		/* verification failed */
-		    needsig = 1;
-		}
-	    }
-
-	    if (sigdigp->sigtype == PGPSIGTYPE_GENERIC_CERT || sigdigp->sigtype == PGPSIGTYPE_PERSONA_CERT || sigdigp->sigtype == PGPSIGTYPE_CASUAL_CERT || sigdigp->sigtype == PGPSIGTYPE_POSITIVE_CERT || sigdigp->sigtype == PGPSIGTYPE_CERT_REVOKE) {
-		if (!useridpkt) {
-		    rc = RPMPGP_ERROR_BAD_PUBKEY_STRUCTURE;
-		    break;		/* signature in wrong section */
-		}
-		if (isselfsig) {
-		    if ((rc = pgpVerifySelf(digp, sigdigp, &mainpkt, &sectionpkt)) != RPMPGP_OK)
-			break;		/* verification failed */
-		    haveselfsig = 1;
-		    needsig = sectionpkt.tag == PGPTAG_PHOTOID ? 0 : 1;
-		    /* note that cert revokations may get overwritten by newer certifications (like in gnupg) */
-		}
 	    }
 
 	    /* check if this signature is expired */
@@ -286,6 +260,7 @@ rpmpgpRC pgpPrtTransferablePubkey(const uint8_t * pkts, size_t pktlen, pgpDigPar
 		needsig = 0;
 	    }
 
+	    /* find the newest self-sig for all the other types */
 	    if (needsig && (!newest_digp || sigdigp->time >= newest_digp->time)) {
 		newest_digp = pgpDigParamsFree(newest_digp);
 		newest_digp = sigdigp;
@@ -293,16 +268,13 @@ rpmpgpRC pgpPrtTransferablePubkey(const uint8_t * pkts, size_t pktlen, pgpDigPar
 	    }
 	    sigdigp = pgpDigParamsFree(sigdigp);
 	} else if (pkt.tag == PGPTAG_USER_ID || pkt.tag == PGPTAG_PHOTOID) {
-	    if (subkeypkt) {
+	    if (sectionpkt.tag == PGPTAG_PUBLIC_SUBKEY) {
 		rc = RPMPGP_ERROR_BAD_PUBKEY_STRUCTURE;
 		break;		/* no user id packets after subkeys allowed */
 	    }
-	    useridpkt = 1;
 	    sectionpkt = pkt;
 	    haveselfsig = 0;
 	} else if (pkt.tag == PGPTAG_PUBLIC_SUBKEY) {
-	    subkeypkt = 1;
-	    useridpkt = 0;
 	    sectionpkt = pkt;
 	    haveselfsig = 0;
 	} else if (pkt.tag == PGPTAG_RESERVED) {
@@ -368,8 +340,8 @@ rpmpgpRC pgpPrtTransferablePubkeySubkeys(const uint8_t *pkts, size_t pktlen,
 
 	/* finish up this subkey if we are at the end or a new one comes next */
 	if (p == pend || pkt.tag == PGPTAG_PUBLIC_SUBKEY) {
+	    /* take the data from the newest signature */
 	    if (newest_digp && subdigp && newest_digp->sigtype == PGPSIGTYPE_SUBKEY_BINDING) {
-		/* copy over the stuff we need from the newest signature */
 		subdigp->saved |= PGPDIG_SAVED_VALID;	/* at least one binding sig */
 		if ((newest_digp->saved & PGPDIG_SAVED_KEY_FLAGS) != 0) {
 		    subdigp->key_flags = newest_digp->key_flags;
@@ -412,10 +384,11 @@ rpmpgpRC pgpPrtTransferablePubkeySubkeys(const uint8_t *pkts, size_t pktlen,
 	    if (pgpPrtSigNoParams(pkt.tag, pkt.body, pkt.blen, sigdigp) != RPMPGP_OK) {
 		sigdigp = pgpDigParamsFree(sigdigp);
 	    }
+
+	    /* check if we understand this signature */
 	    if (sigdigp && sigdigp->sigtype == PGPSIGTYPE_SUBKEY_REVOKE) {
 		needsig = 1;
-	    }
-	    if (sigdigp && sigdigp->sigtype == PGPSIGTYPE_SUBKEY_BINDING) {
+	    } else if (sigdigp && sigdigp->sigtype == PGPSIGTYPE_SUBKEY_BINDING) {
 		/* insist on a embedded primary key binding signature if this is used for signing */
 		int key_flags = (sigdigp->saved & PGPDIG_SAVED_KEY_FLAGS) ? sigdigp->key_flags : 0;
 		if (!(key_flags & 0x02) || verifyPrimaryBindingSig(&mainpkt, &subkeypkt, subdigp, sigdigp) == RPMPGP_OK)
@@ -438,6 +411,7 @@ rpmpgpRC pgpPrtTransferablePubkeySubkeys(const uint8_t *pkts, size_t pktlen,
 		needsig = 0;
 	    }
 
+	    /* find the newest self-sig for all the other types */
 	    if (needsig && (!newest_digp || sigdigp->time >= newest_digp->time)) {
 		newest_digp = pgpDigParamsFree(newest_digp);
 		newest_digp = sigdigp;
