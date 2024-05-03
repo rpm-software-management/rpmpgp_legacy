@@ -10,7 +10,7 @@
 static rpmpgpRC hashKey(DIGEST_CTX hash, const pgpPkt *pkt, int exptag)
 {
     rpmpgpRC rc = RPMPGP_ERROR_INTERNAL;
-    if (pkt->tag == exptag) {
+    if (pkt && pkt->tag == exptag) {
 	uint8_t head[] = {
 	    0x99,
 	    (pkt->blen >> 8),
@@ -23,12 +23,12 @@ static rpmpgpRC hashKey(DIGEST_CTX hash, const pgpPkt *pkt, int exptag)
     return rc;
 }
 
-static rpmpgpRC hashUserID(DIGEST_CTX hash, const pgpPkt *pkt)
+static rpmpgpRC hashUserID(DIGEST_CTX hash, const pgpPkt *pkt, int exptag)
 {
     rpmpgpRC rc = RPMPGP_ERROR_INTERNAL;
-    if (pkt->tag == PGPTAG_USER_ID || pkt->tag == PGPTAG_PHOTOID) {
+    if (pkt && pkt->tag == exptag) {
 	uint8_t head[] = {
-	    pkt->tag == PGPTAG_USER_ID ? 0xb4 : 0xd1,
+	    exptag == PGPTAG_USER_ID ? 0xb4 : 0xd1,
 	    (pkt->blen >> 24),
 	    (pkt->blen >> 16),
 	    (pkt->blen >>  8),
@@ -47,31 +47,29 @@ static rpmpgpRC pgpVerifySelf(pgpDigParams key, pgpDigParams selfsig,
     int rc = RPMPGP_ERROR_SELFSIG_VERIFICATION;
     DIGEST_CTX hash = rpmDigestInit(selfsig->hash_algo, 0);
 
+    if (!hash)
+	return rc;
+
     switch (selfsig->sigtype) {
     case PGPSIGTYPE_SUBKEY_BINDING:
     case PGPSIGTYPE_SUBKEY_REVOKE:
     case PGPSIGTYPE_PRIMARY_BINDING:
-	if (hash && sectionpkt && sectionpkt->tag == PGPTAG_PUBLIC_SUBKEY) {
-	    rc = hashKey(hash, mainpkt, PGPTAG_PUBLIC_KEY);
-	    if (rc == RPMPGP_OK)
-		rc = hashKey(hash, sectionpkt, PGPTAG_PUBLIC_SUBKEY);
-	}
+	rc = hashKey(hash, mainpkt, PGPTAG_PUBLIC_KEY);
+	if (rc == RPMPGP_OK)
+	    rc = hashKey(hash, sectionpkt, PGPTAG_PUBLIC_SUBKEY);
 	break;
     case PGPSIGTYPE_GENERIC_CERT:
     case PGPSIGTYPE_PERSONA_CERT:
     case PGPSIGTYPE_CASUAL_CERT:
     case PGPSIGTYPE_POSITIVE_CERT:
     case PGPSIGTYPE_CERT_REVOKE:
-	if (hash && sectionpkt && (sectionpkt->tag == PGPTAG_USER_ID || sectionpkt->tag == PGPTAG_PHOTOID)) {
-	    rc = hashKey(hash, mainpkt, PGPTAG_PUBLIC_KEY);
-	    if (rc == RPMPGP_OK)
-		rc = hashUserID(hash, sectionpkt);
-	}
+	rc = hashKey(hash, mainpkt, PGPTAG_PUBLIC_KEY);
+	if (rc == RPMPGP_OK)
+	    rc = hashUserID(hash, sectionpkt, sectionpkt->tag == PGPTAG_PHOTOID ? PGPTAG_PHOTOID : PGPTAG_USER_ID);
 	break;
     case PGPSIGTYPE_SIGNED_KEY:
     case PGPSIGTYPE_KEY_REVOKE:
-	if (hash) 
-	    rc = hashKey(hash, mainpkt, PGPTAG_PUBLIC_KEY);
+	rc = hashKey(hash, mainpkt, PGPTAG_PUBLIC_KEY);
 	break;
     default:
 	break;
@@ -96,7 +94,7 @@ static rpmpgpRC verifyPrimaryBindingSig(pgpPkt *mainpkt, pgpPkt *subkeypkt, pgpD
     if (!bindsigdig || !bindsigdig->embedded_sig)
 	return rc;
     emb_digp = pgpDigParamsNew(PGPTAG_SIGNATURE);
-    if (pgpPrtSig(PGPTAG_SIGNATURE, bindsigdig->embedded_sig, bindsigdig->embedded_sig_len, emb_digp) == 0)
+    if (pgpPrtSig(PGPTAG_SIGNATURE, bindsigdig->embedded_sig, bindsigdig->embedded_sig_len, emb_digp) == RPMPGP_OK)
 	if (emb_digp->sigtype == PGPSIGTYPE_PRIMARY_BINDING)
 	    rc = pgpVerifySelf(subkeydig, emb_digp, mainpkt, subkeypkt);
     emb_digp = pgpDigParamsFree(emb_digp);
