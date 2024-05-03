@@ -81,6 +81,7 @@ struct pgpDigParams_s {
     uint8_t * embedded_sig;	/* embedded signature */
     size_t embedded_sig_len;	/* length of the embedded signature */
     pgpKeyID_t mainid;		/* key id of main key if this is a subkey */
+    uint32_t key_mtime;		/* last modification time */
 
     size_t mpi_offset;		/* start of mpi data */
     pgpDigAlg alg;		/*!< algorithm specific data like MPIs */
@@ -151,9 +152,14 @@ rpmpgpRC pgpPrtTransferablePubkeySubkeys(const uint8_t * pkts, size_t pktlen, pg
 				   pgpDigParams **subkeys, int *subkeysCount);
 
 /* signature verification */
+RPM_GNUC_INTERNAL
 rpmpgpRC pgpVerifySignatureRaw(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx);
 
 /* misc */
+RPM_GNUC_INTERNAL
 uint32_t pgpCurrentTime(void);
+
+RPM_GNUC_INTERNAL
+uint32_t pgpDigParamsModificationTime(pgpDigParams digp);
 
 #endif /* _RPMPGP_INTERNAL_H */

@@ -136,6 +136,7 @@ rpmpgpRC pgpPrtTransferablePubkey(const uint8_t * pkts, size_t pktlen, pgpDigPar
 	return rc;
     sectionpkt = mainpkt;
     haveselfsig = 1;
+    digp->key_mtime = digp->time;
 
     rc = RPMPGP_OK;
     while (rc == RPMPGP_OK) {
@@ -243,6 +244,8 @@ rpmpgpRC pgpPrtTransferablePubkey(const uint8_t * pkts, size_t pktlen, pgpDigPar
 		    break;		/* verification failed */
 		if (sigdigp->sigtype != PGPSIGTYPE_KEY_REVOKE)
 		    haveselfsig = 1;
+		if (sigdigp->time > digp->key_mtime)
+		    digp->key_mtime = sigdigp->time;
 	    }
 
 	    /* check if this signature is expired */

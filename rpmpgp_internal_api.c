@@ -100,6 +100,11 @@ uint32_t pgpDigParamsCreationTime(pgpDigParams digp)
     return digp->time;
 }
 
+uint32_t pgpDigParamsModificationTime(pgpDigParams digp)
+{
+    return digp->tag == PGPTAG_PUBLIC_KEY ? digp->key_mtime : 0;
+}
+
 rpmRC pgpVerifySignature2(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx, char **lints)
 {
     rpmRC res = RPMRC_FAIL;
