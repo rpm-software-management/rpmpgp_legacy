@@ -6,7 +6,6 @@
 #include "system.h"
 
 #include <time.h>
-#include <netinet/in.h>
 #include <rpm/rpmstring.h>
 #include <rpm/rpmlog.h>
 
@@ -683,12 +682,14 @@ rpmpgpRC pgpVerifySignatureRaw(pgpDigParams key, pgpDigParams sig, DIGEST_CTX ha
 
     if (sig->version == 4) {
 	/* V4 trailer is six octets long (rfc4880) */
-	uint8_t trailer[6];
-	uint32_t nb = sig->hashlen;
-	nb = htonl(nb);
-	trailer[0] = sig->version;
-	trailer[1] = 0xff;
-	memcpy(trailer+2, &nb, 4);
+	uint8_t trailer[6] = {
+	    sig->version,
+	    0xff,
+	    (sig->hashlen >> 24),
+	    (sig->hashlen >> 16),
+	    (sig->hashlen >>  8),
+	    (sig->hashlen      )
+	};
 	rpmDigestUpdate(ctx, trailer, sizeof(trailer));
     }
 
