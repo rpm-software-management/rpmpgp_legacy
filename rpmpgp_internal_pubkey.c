@@ -147,7 +147,7 @@ rpmpgpRC pgpPrtTransferablePubkey(const uint8_t * pkts, size_t pktlen, pgpDigPar
 		rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;
 		break;
 	    }
-	    if (pkt.tag == PGPTAG_PUBLIC_KEY) {
+	    if (pkt.tag == PGPTAG_PUBLIC_KEY || pkt.tag == PGPTAG_SECRET_KEY) {
 		rc = RPMPGP_ERROR_BAD_PUBKEY_STRUCTURE;
 		break;	/* start of another public key, error out */
 	    }
@@ -333,7 +333,7 @@ rpmpgpRC pgpPrtTransferablePubkeySubkeys(const uint8_t *pkts, size_t pktlen,
 		rc = RPMPGP_ERROR_CORRUPT_PGP_PACKET;
 		break;
 	    }
-	    if (pkt.tag == PGPTAG_PUBLIC_KEY) {
+	    if (pkt.tag == PGPTAG_PUBLIC_KEY || pkt.tag == PGPTAG_SECRET_KEY) {
 		rc = RPMPGP_ERROR_BAD_PUBKEY_STRUCTURE;
 		break;	/* start of another public key, error out */
 	    }
