@@ -7,7 +7,7 @@ option(WITH_LEGACY_OPENPGP "Use legacy OpenPGP parser (DEPRECATED)" OFF)
 target_sources(rpmpgp_legacy PRIVATE
 	rpmpgp_internal.h rpmpgp_internal.c rpmpgp_internal_armor.c
 	rpmpgp_internal_api.c rpmpgp_internal_lint.c
-	rpmpgp_internal_pubkey.c
+	rpmpgp_internal_pubkey.c rpmpgp_internal_merge.c
 )
 if (WITH_OPENSSL)
 	find_package(OpenSSL 1.0.2 REQUIRED)

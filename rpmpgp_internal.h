@@ -155,6 +155,10 @@ rpmpgpRC pgpPrtTransferablePubkeySubkeys(const uint8_t * pkts, size_t pktlen, pg
 RPM_GNUC_INTERNAL
 rpmpgpRC pgpVerifySignatureRaw(pgpDigParams key, pgpDigParams sig, DIGEST_CTX hashctx);
 
+/* pubkey merging */
+RPM_GNUC_INTERNAL
+rpmpgpRC pgpMergeKeys(const uint8_t *pkts1, size_t pktlen1, const uint8_t *pkts2, size_t pktlen2, uint8_t **pktsm, size_t *pktlenm);
+
 /* misc */
 RPM_GNUC_INTERNAL
 uint32_t pgpCurrentTime(void);
