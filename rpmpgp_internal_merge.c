@@ -169,11 +169,39 @@ static void pgpMergeKeySectionAdd(pgpMergeKey *mk, pgpMergePkt *mp) {
     *mpp = mp;
 }
 
-static void pgpMergeKeySubAdd(pgpMergePkt *mp_section, pgpMergePkt *mp) {
-    pgpMergePkt **mpp = &mp_section->sub;
-    while (*mpp)
-	mpp = &(*mpp)->next;
+static void pgpMergeKeySubAddSig(pgpMergePkt *mp_section, pgpMergePkt *mp) {
+    pgpMergePkt *lastsig = NULL, **mpp, *mp2;
+    for (mpp = &mp_section->sub; (mp2 = *mpp) != NULL; mpp = &mp2->next) {
+	if (mp2->pkt.tag == PGPTAG_SIGNATURE && mp2->selfsig == mp->selfsig) {
+	    if (mp->time >= mp2->time)
+		break;
+	    lastsig = mp2;
+	}
+    }
+    if (!*mpp) {
+	if (lastsig) {
+	    /* all the matched signatures are newer than us. put us right behind the last one */
+	    mpp = &lastsig->next;
+	} else if (mp->selfsig) {
+	    /* first selfsig. add to front */
+	    mpp = &mp_section->sub;
+	}
+    }
+    mp->next = *mpp;
     *mpp = mp;
+}
+
+static void pgpMergeKeySubAdd(pgpMergePkt *mp_section, pgpMergePkt *mp) {
+    /* signatures are ordered by creation time, everything else goes to the end */
+    /* (we only change the order of new packets, i.e. where source is not zero) */
+    if (mp->pkt.tag == PGPTAG_SIGNATURE && mp->source != 0) {
+	pgpMergeKeySubAddSig(mp_section, mp);
+    } else {
+	pgpMergePkt **mpp;
+	for (mpp = &mp_section->sub; *mpp; mpp = &(*mpp)->next)
+	    ;
+	*mpp = mp;
+    }
 }
 
 static rpmpgpRC pgpMergeKeyAddPubkey(pgpMergeKey *mk, int source, const uint8_t * pkts, size_t pktlen) {
