@@ -530,8 +530,6 @@ static rpmpgpRC pgpPrtSubType(const uint8_t *h, size_t hlen, pgpDigParams _digp,
 	    break;
 
 	case PGPSUBTYPE_EMBEDDED_SIG:
-	    if (!hashed)
-		break;	/* Subpackets in the unhashed section cannot be trusted */
 	    if (_digp->sigtype != PGPSIGTYPE_SUBKEY_BINDING)
 		break;	/* do not bother for other types */
 	    if (plen - 1 < 6)
