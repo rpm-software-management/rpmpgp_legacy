@@ -9,7 +9,7 @@
 #include <rpm/rpmstring.h>
 #include <rpm/rpmlog.h>
 
-#include "rpmpgpval.h"
+#include "rpmpgpval.hh"
 #include "rpmpgp_internal.h"
 
 #include "debug.h"
