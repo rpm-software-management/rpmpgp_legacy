@@ -9,7 +9,7 @@
 #include <rpm/rpmlog.h>
 #include <rpm/rpmbase64.h>
 
-#include "rpmpgpval.h"
+#include "rpmpgpval.hh"
 #include "rpmpgp_internal.h"
 
 /** \ingroup rpmpgp
