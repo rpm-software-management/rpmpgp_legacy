@@ -494,6 +494,16 @@ static rpmpgpRC pgpPrtSubType(const uint8_t *h, size_t hlen, pgpDigParams _digp,
 	    }
 	    break;
 
+	case PGPSUBTYPE_ISSUER_FINGERPRINT:
+	    if (plen - 1 < 17)
+		break;
+	    impl = 1;
+	    if (p[1] == 4 && plen - 1 == 21 && !(_digp->saved & PGPDIG_SAVED_ID)) {
+		memcpy(_digp->signid, p + plen - sizeof(_digp->signid), sizeof(_digp->signid));
+		_digp->saved |= PGPDIG_SAVED_ID;
+	    }
+	    break;
+
 	case PGPSUBTYPE_KEY_FLAGS:
 	    if (!hashed)
 		break;	/* Subpackets in the unhashed section cannot be trusted */
