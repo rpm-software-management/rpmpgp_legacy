@@ -163,7 +163,9 @@ rpmpgpRC pgpMergeKeys(const uint8_t *pkts1, size_t pktlen1, const uint8_t *pkts2
 RPM_GNUC_INTERNAL
 uint32_t pgpCurrentTime(void);
 
-RPM_GNUC_INTERNAL
 uint32_t pgpDigParamsModificationTime(pgpDigParams digp);
+
+int pgpDigParamsSalt(pgpDigParams digp, const uint8_t **datap, size_t *lenp);
+
 
 #endif /* _RPMPGP_INTERNAL_H */
