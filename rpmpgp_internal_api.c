@@ -280,29 +280,11 @@ rpmRC pgpPubkeyMerge(const uint8_t *pkts1, size_t pkts1len, const uint8_t *pkts2
 
 int pgpDigParamsSalt(pgpDigParams digp, const uint8_t **datap, size_t *lenp)
 {
-    if(!digp || !datap || !lenp) {
-        fprintf(stderr, "pgpDigParamsSalt: Bad parameters\n");
+    if(!digp || !datap || !lenp)
         return -1;
-    }
-
+    if (digp->tag != PGPTAG_SIGNATURE || digp->version >= 6)
+	return -1;	/* unsupported */
     *datap = NULL;
     *lenp = 0;
-
-    if(digp->tag != PGPTAG_SIGNATURE) {
-        fprintf(stderr, "pgpDigParamsSalt: not a signature\n");
-        return -1;
-    }
-    if(digp->sigtype != PGPSIGTYPE_BINARY) {
-        fprintf(stderr, "pgpDigParamsSalt: not a binary signature\n");
-        return -1;
-    }
-    if(digp->hash_algo != RPM_HASH_SHA256) {
-        fprintf(stderr, "pgpDigParamsSalt: non-SHA256 signature detected (%u), this may or may not work\n", digp->hash_algo);
-    }
-
-    // digp->hash contains a signature with length digp->hashlen
-    // but as of 6.0.0, there is no indication of it being salted,
-    // so returning an empty salt seems to be the right thing to
-    // do unconditionally
     return 0;
 }
