@@ -1,4 +1,13 @@
 
+NOTE
+====
+
+This project is no longer maintained. There is a new version available
+called `libpgpr` (https://github.com/rpm-software-management/libpgpr)
+that contains multiple bugfixes and improvements.
+
+
+
 This is the former internal RPM OpenPGP parser, split out of the rpm
 tree after twenty years of service.
 
